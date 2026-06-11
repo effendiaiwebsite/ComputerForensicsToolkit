@@ -41,6 +41,15 @@ test_data/
 .env.local
 *.local
 
+# Local-only TLS interception CA (machine-specific, not for commit)
+norton.cer
+*.cer
+*.pem
+
+# Tauri dev logs
+tauri-dev.log
+*.log
+
 # Case files / collection bundles
 *.dftcase
 collections/
