@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Node
+node_modules/
+.parcel-cache/
+.vite/
+
+# Tauri
+ui/src-tauri/target/
+ui/dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Forensic test data — never commit personal artifacts
+test_data/
+!test_data/.gitkeep
+!test_data/README.md
+
+# Local env
+.env
+.env.local
+*.local
+
+# Case files / collection bundles
+*.dftcase
+collections/
