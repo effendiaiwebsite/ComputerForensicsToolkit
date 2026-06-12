@@ -96,34 +96,51 @@ def _make_run_triage_hive(store: EventStore):
         collection_id = request.get("collection_id")
         host_id_hint = request.get("host_id_hint") or socket.gethostname()
 
-        from collectors.windows.hive import collect_hive
-        from parsers.registry import parse_hive
-
         new_collection = collection_id is None
         collection_id = collection_id or _new_collection_id()
 
-        bundle = collect_hive(hive_path, kind=kind_hint or "system", host_id=host_id_hint)
-        artifact = bundle.artifacts[0]
+        # Same op handles both registry hives and .evtx — UI doesn't need to know.
+        if hive_path.lower().endswith(".evtx"):
+            from collectors.windows.evtx import collect_evtx
+            from parsers.evtx import parse_evtx
 
-        try:
-            detected_kind, events = parse_hive(
+            artifact = collect_evtx(hive_path, host_id=host_id_hint)
+            events = parse_evtx(
                 artifact.source_path,
                 collection_id=collection_id,
                 host_id_hint=host_id_hint,
-                kind=kind_hint,
-                user_hint=user_hint,
+                channel_hint=artifact.channel_hint,
             )
-        except ValueError as exc:
-            return {"ok": False, "error": str(exc)}
+            host_id = _host_from_events(events, host_id_hint)
+            note = f"evtx ({artifact.channel_hint}): {artifact.source_path}"
+            kind_out = "evtx"
+        else:
+            from collectors.windows.hive import collect_hive
+            from parsers.registry import parse_hive
 
-        host_id = _host_from_events(events, host_id_hint)
+            bundle = collect_hive(hive_path, kind=kind_hint or "system", host_id=host_id_hint)
+            artifact = bundle.artifacts[0]
+            try:
+                detected_kind, events = parse_hive(
+                    artifact.source_path,
+                    collection_id=collection_id,
+                    host_id_hint=host_id_hint,
+                    kind=kind_hint,
+                    user_hint=user_hint,
+                )
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
+            host_id = _host_from_events(events, host_id_hint)
+            note = f"{detected_kind} hive: {artifact.source_path}"
+            kind_out = detected_kind
+
         if new_collection:
             store.register_collection(
                 collection_id=collection_id,
                 host_id=host_id,
                 host_os="windows",
                 created_at=_utc_now_iso(),
-                note=f"{detected_kind} hive: {artifact.source_path}",
+                note=note,
             )
         inserted = store.insert_events(events)
         by_type: dict[str, int] = {}
@@ -132,7 +149,7 @@ def _make_run_triage_hive(store: EventStore):
         return {
             "collection_id": collection_id,
             "host_id": host_id,
-            "kind": detected_kind,
+            "kind": kind_out,
             "source_path": artifact.source_path,
             "sha256": artifact.sha256,
             "size_bytes": artifact.size_bytes,
@@ -150,13 +167,16 @@ def _make_run_triage_directory(store: EventStore):
             return {"ok": False, "error": "missing 'dir_path' string"}
         host_id_hint = request.get("host_id_hint") or socket.gethostname()
 
+        from collectors.windows.evtx import collect_evtx
         from collectors.windows.hive import collect_hive
-        from collectors.windows.user_hives import discover_hives
+        from collectors.windows.user_hives import discover_evtx_files, discover_hives
+        from parsers.evtx import parse_evtx
         from parsers.registry import parse_hive
 
         hives = discover_hives(dir_path)
-        if not hives:
-            return {"ok": False, "error": f"no registry hives found under {dir_path!r}"}
+        evtx_files = discover_evtx_files(dir_path)
+        if not hives and not evtx_files:
+            return {"ok": False, "error": f"no registry hives or .evtx files found under {dir_path!r}"}
 
         collection_id = _new_collection_id()
         store.register_collection(
@@ -203,6 +223,36 @@ def _make_run_triage_directory(store: EventStore):
                     "error": f"{type(exc).__name__}: {exc}",
                 })
 
+        for ev_file in evtx_files:
+            try:
+                artifact = collect_evtx(ev_file.path, host_id=host_id)
+                events = parse_evtx(
+                    artifact.source_path,
+                    collection_id=collection_id,
+                    host_id_hint=host_id,
+                    channel_hint=ev_file.channel_hint,
+                )
+                inserted = store.insert_events(events)
+                total += inserted
+                per_hive.append({
+                    "kind": "evtx",
+                    "channel": ev_file.channel_hint,
+                    "path": str(ev_file.path),
+                    "user_hint": None,
+                    "sha256": artifact.sha256,
+                    "size_bytes": artifact.size_bytes,
+                    "event_count": inserted,
+                })
+            except Exception as exc:
+                log.exception("parse failed for %s", ev_file.path)
+                per_hive.append({
+                    "kind": "evtx",
+                    "channel": ev_file.channel_hint,
+                    "path": str(ev_file.path),
+                    "user_hint": None,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+
         return {
             "collection_id": collection_id,
             "host_id": host_id,
@@ -210,7 +260,7 @@ def _make_run_triage_directory(store: EventStore):
             "event_count": total,
             "by_event_type": store.counts_by_event_type(collection_id=collection_id),
             "by_source_artifact": store.counts_by_source_artifact(collection_id=collection_id),
-            "hives": per_hive,
+            "artifacts": per_hive,
         }
 
     return handler

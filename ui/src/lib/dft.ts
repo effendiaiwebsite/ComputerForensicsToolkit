@@ -39,9 +39,10 @@ export type TriageHiveResult = {
   error?: string;
 };
 
-export type DirectoryHiveOutcome = {
+export type DirectoryArtifactOutcome = {
   kind: string;
   path: string;
+  channel?: string;
   user_hint: string | null;
   sha256?: string;
   size_bytes?: number;
@@ -57,7 +58,7 @@ export type TriageDirectoryResult = {
   event_count: number;
   by_event_type: Record<string, number>;
   by_source_artifact: Record<string, number>;
-  hives: DirectoryHiveOutcome[];
+  artifacts: DirectoryArtifactOutcome[];
   error?: string;
 };
 

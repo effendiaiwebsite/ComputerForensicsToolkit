@@ -60,3 +60,12 @@ def test_not_a_directory_raises(tmp_path: Path) -> None:
     f.write_bytes(b"")
     with pytest.raises(NotADirectoryError):
         discover_hives(f)
+
+
+def test_evtx_files_are_not_classified_as_hives(tmp_path: Path) -> None:
+    """Regression: Security.evtx / System.evtx must not be treated as hives."""
+    (tmp_path / "Security.evtx").write_bytes(b"\x00")
+    (tmp_path / "System.evtx").write_bytes(b"\x00")
+    (tmp_path / "SYSTEM").write_bytes(b"\x00")
+    kinds = {h.kind for h in discover_hives(tmp_path)}
+    assert kinds == {"system"}

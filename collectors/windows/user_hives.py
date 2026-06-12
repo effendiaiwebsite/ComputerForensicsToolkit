@@ -48,9 +48,12 @@ class DiscoveredHive:
 
 def _classify(p: Path) -> HiveKind | None:
     upper = p.name.upper()
+    # Hard exclude file types that share the system-vocab prefix but aren't
+    # registry hives — chiefly event logs (Security.evtx etc.).
+    if p.suffix.lower() == ".evtx":
+        return None
     if upper in _NAME_TO_KIND:
         return _NAME_TO_KIND[upper]
-    # Match prefixes like "SYSTEM_dump.hve" → system, "Amcache.hve" → amcache.
     base = re.split(r"[._]", upper, maxsplit=1)[0]
     return _PREFIX_TO_KIND.get(base)
 
@@ -85,6 +88,30 @@ def discover_hives(directory: str | Path) -> list[DiscoveredHive]:
         found.append(DiscoveredHive(path=entry, kind=kind, user_hint=user))
 
     found.sort(key=lambda h: (_KIND_ORDER.get(h.kind, 99), str(h.path)))
+    return found
+
+
+@dataclass
+class DiscoveredEvtx:
+    path: Path
+    channel_hint: str
+
+
+def discover_evtx_files(directory: str | Path) -> list[DiscoveredEvtx]:
+    """Find every ``*.evtx`` under the directory."""
+    from collectors.windows.evtx import _channel_from_filename  # avoid import cycle
+
+    root = Path(directory).resolve()
+    if not root.is_dir():
+        raise NotADirectoryError(f"not a directory: {root}")
+
+    found: list[DiscoveredEvtx] = []
+    for entry in root.rglob("*.evtx"):
+        if entry.is_file():
+            found.append(
+                DiscoveredEvtx(path=entry, channel_hint=_channel_from_filename(entry.name)),
+            )
+    found.sort(key=lambda e: str(e.path))
     return found
 
 

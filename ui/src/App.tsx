@@ -348,7 +348,7 @@ export default function App() {
       setCollection({
         collection_id: res.collection_id,
         host_id: res.host_id,
-        label: `directory: ${res.dir_path} (${res.hives.length} hives)`,
+        label: `directory: ${res.dir_path} (${res.artifacts.length} artifacts)`,
         event_count: res.event_count,
         by_event_type: res.by_event_type,
         by_source_artifact: res.by_source_artifact,
