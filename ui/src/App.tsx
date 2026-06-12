@@ -7,14 +7,15 @@ import {
   type ColumnDef,
   type SortingState,
 } from "@tanstack/react-table";
-import { ArrowDown, ArrowUp, FolderOpen, X } from "lucide-react";
+import { ArrowDown, ArrowUp, FolderOpen, FolderTree, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   pingSidecar,
   queryEvents,
-  runTriageSystemHive,
+  runTriageDirectory,
+  runTriageHive,
   type ForensicEvent,
   type SidecarPong,
 } from "@/lib/dft";
@@ -28,10 +29,11 @@ type SidecarState =
 
 type Collection = {
   collection_id: string;
-  source_path: string;
   host_id: string;
+  label: string;
   event_count: number;
   by_event_type: Record<string, number>;
+  by_source_artifact: Record<string, number>;
 };
 
 const columns: ColumnDef<ForensicEvent>[] = [
@@ -72,6 +74,23 @@ const SORTABLE_COLS = new Set([
   "summary",
 ]);
 
+const EVENT_TYPE_PRIORITY: string[] = [
+  "program_execution",
+  "program_install",
+  "persistence_entry",
+  "usb_connection",
+  "service_install",
+  "account_change",
+  "file_access",
+  "shell_command",
+  "system_config_change",
+];
+
+function rankEventType(t: string): number {
+  const idx = EVENT_TYPE_PRIORITY.indexOf(t);
+  return idx === -1 ? 999 : idx;
+}
+
 function StatusPill({ state }: { state: SidecarState }) {
   const base =
     "inline-flex items-center gap-2 rounded-full border border-border px-3 py-1 text-xs font-mono";
@@ -105,6 +124,34 @@ function StatusPill({ state }: { state: SidecarState }) {
         </span>
       );
   }
+}
+
+function Chip({
+  label,
+  count,
+  active,
+  onClick,
+}: {
+  label: string;
+  count: number;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-mono transition-colors",
+        active
+          ? "border-accent bg-accent/20 text-foreground"
+          : "border-border bg-muted/30 text-muted-foreground hover:text-foreground hover:border-muted-foreground",
+      )}
+    >
+      <span>{label}</span>
+      <span className={cn("rounded px-1.5 py-0 text-[10px]", active ? "bg-accent/30" : "bg-muted/60")}>{count}</span>
+    </button>
+  );
 }
 
 function DetailPane({ event, onClose }: { event: ForensicEvent | null; onClose: () => void }) {
@@ -175,6 +222,7 @@ export default function App() {
   const [filter, setFilter] = useState("");
   const [debouncedFilter, setDebouncedFilter] = useState("");
   const [sorting, setSorting] = useState<SortingState>([{ id: "timestamp", desc: false }]);
+  const [activeTypes, setActiveTypes] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     pingSidecar()
@@ -202,6 +250,7 @@ export default function App() {
       const res = await queryEvents({
         collection_id: collection.collection_id,
         summary_contains: debouncedFilter || undefined,
+        event_types: activeTypes.size ? Array.from(activeTypes) : undefined,
         sort_by,
         sort_dir,
         limit: 1000,
@@ -209,13 +258,23 @@ export default function App() {
       if (res.ok) {
         setEvents(res.events);
         setTotal(res.total);
+        setCollection((c) =>
+          c
+            ? {
+                ...c,
+                event_count: res.total,
+                by_event_type: res.by_event_type,
+                by_source_artifact: res.by_source_artifact,
+              }
+            : c,
+        );
       } else {
         setSidecar({ kind: "error", message: res.error ?? "query failed" });
       }
     } catch (err) {
       setSidecar({ kind: "error", message: err instanceof Error ? err.message : String(err) });
     }
-  }, [collection, debouncedFilter, sorting]);
+  }, [collection, debouncedFilter, sorting, activeTypes]);
 
   useEffect(() => {
     void refresh();
@@ -227,7 +286,7 @@ export default function App() {
       const selection = await openDialog({
         multiple: false,
         directory: false,
-        title: "Select a SYSTEM hive",
+        title: "Select a registry hive",
       });
       path = typeof selection === "string" ? selection : null;
     } catch (err) {
@@ -239,24 +298,75 @@ export default function App() {
     setSidecar({ kind: "running", what: "parsing hive" });
     setSelected(null);
     setEvents([]);
+    setActiveTypes(new Set());
     try {
-      const res = await runTriageSystemHive(path);
+      const res = await runTriageHive({ hive_path: path });
       if (!res.ok) {
         setSidecar({ kind: "error", message: res.error ?? "triage failed" });
         return;
       }
       setCollection({
         collection_id: res.collection_id,
-        source_path: res.source_path,
         host_id: res.host_id,
+        label: `${res.kind ?? "hive"}: ${res.source_path}`,
         event_count: res.event_count,
         by_event_type: res.by_event_type,
+        by_source_artifact: {},
       });
       const pong = await pingSidecar();
       if (pong.ok) setSidecar({ kind: "ok", info: pong });
     } catch (err) {
       setSidecar({ kind: "error", message: err instanceof Error ? err.message : String(err) });
     }
+  }
+
+  async function openDirectory() {
+    let dir: string | null = null;
+    try {
+      const selection = await openDialog({
+        multiple: false,
+        directory: true,
+        title: "Select a triage directory of hives",
+      });
+      dir = typeof selection === "string" ? selection : null;
+    } catch (err) {
+      setSidecar({ kind: "error", message: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    if (!dir) return;
+
+    setSidecar({ kind: "running", what: "parsing directory" });
+    setSelected(null);
+    setEvents([]);
+    setActiveTypes(new Set());
+    try {
+      const res = await runTriageDirectory(dir);
+      if (!res.ok) {
+        setSidecar({ kind: "error", message: res.error ?? "directory triage failed" });
+        return;
+      }
+      setCollection({
+        collection_id: res.collection_id,
+        host_id: res.host_id,
+        label: `directory: ${res.dir_path} (${res.hives.length} hives)`,
+        event_count: res.event_count,
+        by_event_type: res.by_event_type,
+        by_source_artifact: res.by_source_artifact,
+      });
+      const pong = await pingSidecar();
+      if (pong.ok) setSidecar({ kind: "ok", info: pong });
+    } catch (err) {
+      setSidecar({ kind: "error", message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  function toggleType(t: string) {
+    setActiveTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(t)) next.delete(t);
+      else next.add(t);
+      return next;
+    });
   }
 
   const table = useReactTable({
@@ -268,12 +378,11 @@ export default function App() {
     manualSorting: true,
   });
 
-  const byTypeSummary = useMemo(() => {
-    if (!collection) return "";
-    return Object.entries(collection.by_event_type)
-      .sort(([, a], [, b]) => b - a)
-      .map(([k, v]) => `${k}=${v}`)
-      .join(" · ");
+  const chipEntries = useMemo(() => {
+    if (!collection) return [] as [string, number][];
+    return Object.entries(collection.by_event_type).sort(
+      ([a, ac], [b, bc]) => rankEventType(a) - rankEventType(b) || bc - ac,
+    );
   }, [collection]);
 
   return (
@@ -284,20 +393,29 @@ export default function App() {
             DFT — Digital Forensics Triage Toolkit
           </h1>
           <span className="font-mono text-xs text-muted-foreground">
-            Phase 1 · Windows · M2
+            Phase 1 · Windows · M3
           </span>
         </div>
         <div className="flex items-center gap-3">
           <StatusPill state={sidecar} />
           <Button onClick={openHive} disabled={sidecar.kind === "running"} size="sm">
             <FolderOpen className="h-4 w-4" />
-            Open SYSTEM hive…
+            Open hive…
+          </Button>
+          <Button
+            onClick={openDirectory}
+            disabled={sidecar.kind === "running"}
+            size="sm"
+            variant="secondary"
+          >
+            <FolderTree className="h-4 w-4" />
+            Open directory…
           </Button>
         </div>
       </header>
 
       <div className="flex items-center gap-3 border-b border-border bg-muted/10 px-4 py-2">
-        <div className="w-80">
+        <div className="w-80 shrink-0">
           <Input
             placeholder="filter summary…"
             value={filter}
@@ -310,19 +428,36 @@ export default function App() {
             <>
               <span className="text-foreground">{collection.host_id}</span>
               {" · "}
-              <span title={collection.source_path}>{collection.source_path}</span>
-              {byTypeSummary && (
-                <>
-                  {" · "}
-                  {byTypeSummary}
-                </>
-              )}
+              <span title={collection.label}>{collection.label}</span>
             </>
           ) : (
-            <span>no collection loaded — open a hive to begin</span>
+            <span>no collection loaded — open a hive or a triage directory to begin</span>
           )}
         </div>
       </div>
+
+      {collection && chipEntries.length > 0 && (
+        <div className="flex flex-wrap gap-2 border-b border-border bg-muted/5 px-4 py-2">
+          {chipEntries.map(([type, count]) => (
+            <Chip
+              key={type}
+              label={type}
+              count={count}
+              active={activeTypes.has(type)}
+              onClick={() => toggleType(type)}
+            />
+          ))}
+          {activeTypes.size > 0 && (
+            <button
+              type="button"
+              onClick={() => setActiveTypes(new Set())}
+              className="text-xs font-mono text-muted-foreground underline hover:text-foreground"
+            >
+              clear
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="flex flex-1 overflow-hidden">
         <main className="flex-1 overflow-hidden">
@@ -368,8 +503,8 @@ export default function App() {
                         <>No events match the current filter.</>
                       ) : (
                         <>
-                          No events. Click <span className="text-foreground">Open SYSTEM hive…</span>
-                          {" "}to begin.
+                          No events. Click <span className="text-foreground">Open hive…</span>
+                          {" "}or <span className="text-foreground">Open directory…</span> to begin.
                         </>
                       )}
                     </td>
@@ -403,7 +538,7 @@ export default function App() {
       </div>
 
       <footer className="border-t border-border bg-muted/30 px-4 py-1 font-mono text-xs text-muted-foreground">
-        events: {events.length} of {total} · findings: 0 · M2
+        events: {events.length} of {total} · findings: 0 · M3
       </footer>
     </div>
   );

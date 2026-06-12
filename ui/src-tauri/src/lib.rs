@@ -25,6 +25,28 @@ async fn run_triage_system_hive(
 }
 
 #[tauri::command]
+async fn run_triage_hive(
+    sidecar: State<'_, Sidecar>,
+    args: Value,
+) -> Result<Value, String> {
+    sidecar
+        .request("run_triage_hive", args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn run_triage_directory(
+    sidecar: State<'_, Sidecar>,
+    dir_path: String,
+) -> Result<Value, String> {
+    sidecar
+        .request("run_triage_directory", json!({ "dir_path": dir_path }))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn query_events(
     sidecar: State<'_, Sidecar>,
     args: Value,
@@ -53,6 +75,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             ping_sidecar,
             run_triage_system_hive,
+            run_triage_hive,
+            run_triage_directory,
             query_events,
         ])
         .run(tauri::generate_context!())

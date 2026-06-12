@@ -135,7 +135,9 @@ class EventStore:
         *,
         collection_id: str | None = None,
         event_type: str | None = None,
+        event_types: list[str] | None = None,
         source_artifact: str | None = None,
+        source_artifacts: list[str] | None = None,
         summary_contains: str | None = None,
         sort_by: str = "timestamp",
         sort_dir: str = "asc",
@@ -155,9 +157,17 @@ class EventStore:
         if event_type is not None:
             where.append("event_type = ?")
             params.append(event_type)
+        if event_types:
+            placeholders = ",".join("?" * len(event_types))
+            where.append(f"event_type IN ({placeholders})")
+            params.extend(event_types)
         if source_artifact is not None:
             where.append("source_artifact = ?")
             params.append(source_artifact)
+        if source_artifacts:
+            placeholders = ",".join("?" * len(source_artifacts))
+            where.append(f"source_artifact IN ({placeholders})")
+            params.extend(source_artifacts)
         if summary_contains:
             where.append("summary LIKE ?")
             params.append(f"%{summary_contains}%")
@@ -184,6 +194,32 @@ class EventStore:
                 (collection_id,),
             ).fetchone()
         return int(row["c"])
+
+    def counts_by_event_type(self, *, collection_id: str | None = None) -> dict[str, int]:
+        if collection_id is None:
+            rows = self._conn.execute(
+                "SELECT event_type, COUNT(*) AS c FROM events GROUP BY event_type"
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT event_type, COUNT(*) AS c FROM events "
+                "WHERE collection_id = ? GROUP BY event_type",
+                (collection_id,),
+            ).fetchall()
+        return {row["event_type"]: int(row["c"]) for row in rows}
+
+    def counts_by_source_artifact(self, *, collection_id: str | None = None) -> dict[str, int]:
+        if collection_id is None:
+            rows = self._conn.execute(
+                "SELECT source_artifact, COUNT(*) AS c FROM events GROUP BY source_artifact"
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT source_artifact, COUNT(*) AS c FROM events "
+                "WHERE collection_id = ? GROUP BY source_artifact",
+                (collection_id,),
+            ).fetchall()
+        return {row["source_artifact"]: int(row["c"]) for row in rows}
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
