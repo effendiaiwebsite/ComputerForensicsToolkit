@@ -7,23 +7,27 @@ import {
   type ColumnDef,
   type SortingState,
 } from "@tanstack/react-table";
-import { ArrowDown, ArrowUp, FolderOpen, FolderTree, Layers, Table2, X } from "lucide-react";
+import { Activity, ArrowDown, ArrowUp, FolderOpen, FolderTree, Layers, Table2, X } from "lucide-react";
 
+import { Timeline } from "@/components/Timeline";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+  getEvent,
   pingSidecar,
   queryEvents,
   queryProgramExecutionComposite,
+  queryTimeline,
   runTriageDirectory,
   runTriageHive,
   type ExecutionCompositeRow,
   type ForensicEvent,
   type SidecarPong,
+  type TimelinePoint,
 } from "@/lib/dft";
 import { cn } from "@/lib/utils";
 
-type ViewMode = "events" | "execution";
+type ViewMode = "events" | "execution" | "timeline";
 
 type SidecarState =
   | { kind: "idle" }
@@ -230,6 +234,9 @@ export default function App() {
   const [view, setView] = useState<ViewMode>("events");
   const [execRows, setExecRows] = useState<ExecutionCompositeRow[]>([]);
   const [execTotal, setExecTotal] = useState(0);
+  const [timelineCategories, setTimelineCategories] = useState<string[]>([]);
+  const [timelinePoints, setTimelinePoints] = useState<TimelinePoint[]>([]);
+  const [timelineSkippedNull, setTimelineSkippedNull] = useState(0);
 
   useEffect(() => {
     pingSidecar()
@@ -261,6 +268,26 @@ export default function App() {
           setExecTotal(res.total);
         } else {
           setSidecar({ kind: "error", message: res.error ?? "composite query failed" });
+        }
+      } catch (err) {
+        setSidecar({ kind: "error", message: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
+    if (view === "timeline") {
+      try {
+        const res = await queryTimeline({
+          collection_id: collection.collection_id,
+          summary_contains: debouncedFilter || undefined,
+          event_types: activeTypes.size ? Array.from(activeTypes) : undefined,
+          limit: 100_000,
+        });
+        if (res.ok) {
+          setTimelineCategories(res.categories);
+          setTimelinePoints(res.points);
+          setTimelineSkippedNull(res.skipped_null_ts);
+        } else {
+          setSidecar({ kind: "error", message: res.error ?? "timeline query failed" });
         }
       } catch (err) {
         setSidecar({ kind: "error", message: err instanceof Error ? err.message : String(err) });
@@ -417,7 +444,7 @@ export default function App() {
             DFT — Digital Forensics Triage Toolkit
           </h1>
           <span className="font-mono text-xs text-muted-foreground">
-            Phase 1 · Windows · M3
+            Phase 1 · Windows · M6
           </span>
         </div>
         <div className="flex items-center gap-3">
@@ -449,6 +476,20 @@ export default function App() {
             >
               <Layers className="h-3 w-3" />
               Execution
+            </button>
+            <button
+              type="button"
+              onClick={() => setView("timeline")}
+              className={cn(
+                "px-3 py-1.5 text-xs font-mono inline-flex items-center gap-1.5 border-l border-border",
+                view === "timeline"
+                  ? "bg-accent text-accent-foreground"
+                  : "bg-muted/30 text-muted-foreground hover:text-foreground",
+              )}
+              disabled={!collection}
+            >
+              <Activity className="h-3 w-3" />
+              Timeline
             </button>
           </div>
           <StatusPill state={sidecar} />
@@ -490,7 +531,7 @@ export default function App() {
         </div>
       </div>
 
-      {view === "events" && collection && chipEntries.length > 0 && (
+      {view !== "execution" && collection && chipEntries.length > 0 && (
         <div className="flex flex-wrap gap-2 border-b border-border bg-muted/5 px-4 py-2">
           {chipEntries.map(([type, count]) => (
             <Chip
@@ -587,8 +628,24 @@ export default function App() {
                   )}
                 </tbody>
               </table>
-            ) : (
+            ) : view === "execution" ? (
               <ExecutionTable rows={execRows} hasCollection={!!collection} />
+            ) : (
+              <Timeline
+                categories={timelineCategories}
+                points={timelinePoints}
+                onEventClick={async (eventId) => {
+                  try {
+                    const res = await getEvent(eventId);
+                    if (res.ok && res.event) setSelected(res.event);
+                  } catch (err) {
+                    setSidecar({
+                      kind: "error",
+                      message: err instanceof Error ? err.message : String(err),
+                    });
+                  }
+                }}
+              />
             )}
           </div>
         </main>
@@ -597,8 +654,10 @@ export default function App() {
 
       <footer className="border-t border-border bg-muted/30 px-4 py-1 font-mono text-xs text-muted-foreground">
         {view === "events"
-          ? `events: ${events.length} of ${total} · findings: 0 · M5`
-          : `unique programs: ${execRows.length} of ${execTotal} · findings: 0 · M5`}
+          ? `events: ${events.length} of ${total} · findings: 0 · M6`
+          : view === "execution"
+          ? `unique programs: ${execRows.length} of ${execTotal} · findings: 0 · M6`
+          : `timeline: ${timelinePoints.length} dated points across ${timelineCategories.length} tracks (${timelineSkippedNull} undated) · findings: 0 · M6`}
       </footer>
     </div>
   );

@@ -334,6 +334,91 @@ def _make_query_program_execution_composite(store: EventStore):
     return handler
 
 
+def _make_query_timeline(store: EventStore):
+    def handler(request: dict[str, Any]) -> dict[str, Any]:
+        collection_id = request.get("collection_id")
+        event_types = request.get("event_types")
+        source_artifacts = request.get("source_artifacts")
+        summary_contains = request.get("summary_contains")
+        limit = int(request.get("limit", 100_000))
+
+        rows = store.query_timeline_points(
+            collection_id=collection_id,
+            event_types=event_types,
+            source_artifacts=source_artifacts,
+            summary_contains=summary_contains,
+            limit=limit,
+        )
+
+        category_index: dict[str, int] = {}
+        for row in rows:
+            artifact = row["source_artifact"]
+            if artifact not in category_index:
+                category_index[artifact] = len(category_index)
+
+        points: list[dict[str, Any]] = []
+        for row in rows:
+            ts_ms = _iso_to_ms(row["timestamp"])
+            if ts_ms is None:
+                continue
+            points.append({
+                "event_id": row["event_id"],
+                "ts_ms": ts_ms,
+                "category_idx": category_index[row["source_artifact"]],
+                "event_type": row["event_type"],
+                "summary": row["summary"],
+            })
+
+        return {
+            "categories": sorted(category_index, key=category_index.get),
+            "points": points,
+            "total": len(points),
+            "skipped_unparsable_ts": len(rows) - len(points),
+            "skipped_null_ts": store.count_undated_events(
+                collection_id=collection_id,
+                event_types=event_types,
+                source_artifacts=source_artifacts,
+                summary_contains=summary_contains,
+            ),
+        }
+
+    return handler
+
+
+def _iso_to_ms(s: str | None) -> int | None:
+    """Best-effort ISO 8601 → epoch milliseconds."""
+    if not s:
+        return None
+    txt = s.strip()
+    if txt.endswith("Z"):
+        txt = txt[:-1] + "+00:00"
+    # SQLite-ish microsecond truncation: drop nanoseconds past 6 digits.
+    try:
+        dt = datetime.fromisoformat(txt)
+    except ValueError:
+        # Try shaving off everything after the decimal seconds.
+        if "." in txt:
+            head, sep, tail = txt.partition(".")
+            # Find tz suffix in tail
+            tz_idx = -1
+            for i, ch in enumerate(tail):
+                if ch in "+-Z":
+                    tz_idx = i
+                    break
+            tz = tail[tz_idx:] if tz_idx >= 0 else ""
+            frac = tail[:tz_idx] if tz_idx >= 0 else tail
+            frac = frac[:6]
+            try:
+                dt = datetime.fromisoformat(f"{head}.{frac}{tz}")
+            except ValueError:
+                return None
+        else:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)
+
+
 def _make_query_events(store: EventStore):
     def handler(request: dict[str, Any]) -> dict[str, Any]:
         events = store.query_events(
@@ -366,6 +451,18 @@ def build_dispatcher(store: EventStore | None = None) -> Dispatcher:
     dispatcher.register("run_triage_hive", _make_run_triage_hive(store))
     dispatcher.register("run_triage_directory", _make_run_triage_directory(store))
     dispatcher.register("query_events", _make_query_events(store))
+    dispatcher.register("query_timeline", _make_query_timeline(store))
+
+    def _get_event_handler(request: dict[str, Any]) -> dict[str, Any]:
+        event_id = request.get("event_id")
+        if not isinstance(event_id, str) or not event_id:
+            return {"ok": False, "error": "missing 'event_id' string"}
+        row = store.get_event(event_id)
+        if row is None:
+            return {"ok": False, "error": "event not found"}
+        return {"event": row}
+
+    dispatcher.register("get_event", _get_event_handler)
     dispatcher.register(
         "query_program_execution_composite",
         _make_query_program_execution_composite(store),

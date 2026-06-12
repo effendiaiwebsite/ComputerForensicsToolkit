@@ -185,6 +185,15 @@ class EventStore:
         rows = self._conn.execute(sql, params).fetchall()
         return [_row_to_dict(row) for row in rows]
 
+    def get_event(self, event_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT event_id, collection_id, timestamp, timestamp_source, host_os, "
+            "host_id, user, source_artifact, source_path, event_type, summary, "
+            "evidence_json, raw_json, parser_version FROM events WHERE event_id = ?",
+            (event_id,),
+        ).fetchone()
+        return _row_to_dict(row) if row else None
+
     def count_events(self, *, collection_id: str | None = None) -> int:
         if collection_id is None:
             row = self._conn.execute("SELECT COUNT(*) AS c FROM events").fetchone()
@@ -300,6 +309,72 @@ class EventStore:
             )
         """
         row = self._conn.execute(sql, params).fetchone()
+        return int(row["c"])
+
+    def query_timeline_points(
+        self,
+        *,
+        collection_id: str | None = None,
+        event_types: list[str] | None = None,
+        source_artifacts: list[str] | None = None,
+        summary_contains: str | None = None,
+        limit: int = 100_000,
+    ) -> list[dict[str, Any]]:
+        """Lightweight projection for the timeline: skips JSON blobs and undated events."""
+        where: list[str] = ["timestamp IS NOT NULL"]
+        params: list[Any] = []
+        if collection_id is not None:
+            where.append("collection_id = ?")
+            params.append(collection_id)
+        if event_types:
+            placeholders = ",".join("?" * len(event_types))
+            where.append(f"event_type IN ({placeholders})")
+            params.extend(event_types)
+        if source_artifacts:
+            placeholders = ",".join("?" * len(source_artifacts))
+            where.append(f"source_artifact IN ({placeholders})")
+            params.extend(source_artifacts)
+        if summary_contains:
+            where.append("summary LIKE ?")
+            params.append(f"%{summary_contains}%")
+
+        sql = (
+            "SELECT event_id, timestamp, source_artifact, event_type, summary "
+            "FROM events WHERE " + " AND ".join(where) +
+            " ORDER BY timestamp ASC LIMIT ?"
+        )
+        params.append(limit)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_undated_events(
+        self,
+        *,
+        collection_id: str | None = None,
+        event_types: list[str] | None = None,
+        source_artifacts: list[str] | None = None,
+        summary_contains: str | None = None,
+    ) -> int:
+        where: list[str] = ["timestamp IS NULL"]
+        params: list[Any] = []
+        if collection_id is not None:
+            where.append("collection_id = ?")
+            params.append(collection_id)
+        if event_types:
+            placeholders = ",".join("?" * len(event_types))
+            where.append(f"event_type IN ({placeholders})")
+            params.extend(event_types)
+        if source_artifacts:
+            placeholders = ",".join("?" * len(source_artifacts))
+            where.append(f"source_artifact IN ({placeholders})")
+            params.extend(source_artifacts)
+        if summary_contains:
+            where.append("summary LIKE ?")
+            params.append(f"%{summary_contains}%")
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS c FROM events WHERE " + " AND ".join(where),
+            params,
+        ).fetchone()
         return int(row["c"])
 
     def counts_by_source_artifact(self, *, collection_id: str | None = None) -> dict[str, int]:

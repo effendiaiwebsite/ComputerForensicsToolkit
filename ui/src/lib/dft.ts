@@ -133,3 +133,41 @@ export async function queryProgramExecutionComposite(args: {
 }): Promise<ExecutionCompositeResult> {
   return invoke<ExecutionCompositeResult>("query_program_execution_composite", { args });
 }
+
+export type TimelinePoint = {
+  event_id: string;
+  ts_ms: number;
+  category_idx: number;
+  event_type: string;
+  summary: string;
+};
+
+export type TimelineResult = {
+  ok: boolean;
+  categories: string[];
+  points: TimelinePoint[];
+  total: number;
+  skipped_unparsable_ts: number;
+  skipped_null_ts: number;
+  error?: string;
+};
+
+export async function queryTimeline(args: {
+  collection_id?: string;
+  event_types?: string[];
+  source_artifacts?: string[];
+  summary_contains?: string;
+  limit?: number;
+}): Promise<TimelineResult> {
+  return invoke<TimelineResult>("query_timeline", { args });
+}
+
+export type GetEventResult = {
+  ok: boolean;
+  event?: ForensicEvent;
+  error?: string;
+};
+
+export async function getEvent(eventId: string): Promise<GetEventResult> {
+  return invoke<GetEventResult>("get_event", { eventId });
+}
