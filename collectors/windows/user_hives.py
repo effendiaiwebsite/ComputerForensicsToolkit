@@ -115,6 +115,25 @@ def discover_evtx_files(directory: str | Path) -> list[DiscoveredEvtx]:
     return found
 
 
+@dataclass
+class DiscoveredPrefetch:
+    path: Path
+
+
+def discover_prefetch_files(directory: str | Path) -> list[DiscoveredPrefetch]:
+    """Find every ``*.pf`` under the directory."""
+    root = Path(directory).resolve()
+    if not root.is_dir():
+        raise NotADirectoryError(f"not a directory: {root}")
+
+    found: list[DiscoveredPrefetch] = []
+    for entry in root.rglob("*.pf"):
+        if entry.is_file():
+            found.append(DiscoveredPrefetch(path=entry))
+    found.sort(key=lambda e: str(e.path))
+    return found
+
+
 # SYSTEM first so ComputerName is known before downstream parsers run.
 _KIND_ORDER: dict[HiveKind, int] = {
     "system": 0,

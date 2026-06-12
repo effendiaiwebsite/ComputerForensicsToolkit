@@ -7,6 +7,7 @@ dependencies = [
     "regipy>=5.0.0",
     "libfwsi-python>=20240000",
     "python-evtx>=0.8.0",
+    "libscca-python>=20240000",
 ]
 
 [project.optional-dependencies]

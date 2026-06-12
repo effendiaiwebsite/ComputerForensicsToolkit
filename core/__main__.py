@@ -99,8 +99,9 @@ def _make_run_triage_hive(store: EventStore):
         new_collection = collection_id is None
         collection_id = collection_id or _new_collection_id()
 
-        # Same op handles both registry hives and .evtx — UI doesn't need to know.
-        if hive_path.lower().endswith(".evtx"):
+        # Same op handles registry hives, .evtx, and Prefetch — UI doesn't need to know.
+        lower = hive_path.lower()
+        if lower.endswith(".evtx"):
             from collectors.windows.evtx import collect_evtx
             from parsers.evtx import parse_evtx
 
@@ -114,6 +115,19 @@ def _make_run_triage_hive(store: EventStore):
             host_id = _host_from_events(events, host_id_hint)
             note = f"evtx ({artifact.channel_hint}): {artifact.source_path}"
             kind_out = "evtx"
+        elif lower.endswith(".pf"):
+            from collectors.windows.prefetch import collect_prefetch
+            from parsers.prefetch import parse_prefetch
+
+            artifact = collect_prefetch(hive_path, host_id=host_id_hint)
+            events = parse_prefetch(
+                artifact.source_path,
+                collection_id=collection_id,
+                host_id_hint=host_id_hint,
+            )
+            host_id = host_id_hint
+            note = f"prefetch: {artifact.source_path}"
+            kind_out = "prefetch"
         else:
             from collectors.windows.hive import collect_hive
             from parsers.registry import parse_hive
@@ -169,14 +183,24 @@ def _make_run_triage_directory(store: EventStore):
 
         from collectors.windows.evtx import collect_evtx
         from collectors.windows.hive import collect_hive
-        from collectors.windows.user_hives import discover_evtx_files, discover_hives
+        from collectors.windows.prefetch import collect_prefetch
+        from collectors.windows.user_hives import (
+            discover_evtx_files,
+            discover_hives,
+            discover_prefetch_files,
+        )
         from parsers.evtx import parse_evtx
+        from parsers.prefetch import parse_prefetch
         from parsers.registry import parse_hive
 
         hives = discover_hives(dir_path)
         evtx_files = discover_evtx_files(dir_path)
-        if not hives and not evtx_files:
-            return {"ok": False, "error": f"no registry hives or .evtx files found under {dir_path!r}"}
+        prefetch_files = discover_prefetch_files(dir_path)
+        if not hives and not evtx_files and not prefetch_files:
+            return {
+                "ok": False,
+                "error": f"no registry hives, .evtx, or .pf files found under {dir_path!r}",
+            }
 
         collection_id = _new_collection_id()
         store.register_collection(
@@ -253,6 +277,33 @@ def _make_run_triage_directory(store: EventStore):
                     "error": f"{type(exc).__name__}: {exc}",
                 })
 
+        for pf in prefetch_files:
+            try:
+                artifact = collect_prefetch(pf.path, host_id=host_id)
+                events = parse_prefetch(
+                    artifact.source_path,
+                    collection_id=collection_id,
+                    host_id_hint=host_id,
+                )
+                inserted = store.insert_events(events)
+                total += inserted
+                per_hive.append({
+                    "kind": "prefetch",
+                    "path": str(pf.path),
+                    "user_hint": None,
+                    "sha256": artifact.sha256,
+                    "size_bytes": artifact.size_bytes,
+                    "event_count": inserted,
+                })
+            except Exception as exc:
+                log.exception("parse failed for %s", pf.path)
+                per_hive.append({
+                    "kind": "prefetch",
+                    "path": str(pf.path),
+                    "user_hint": None,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+
         return {
             "collection_id": collection_id,
             "host_id": host_id,
@@ -261,6 +312,23 @@ def _make_run_triage_directory(store: EventStore):
             "by_event_type": store.counts_by_event_type(collection_id=collection_id),
             "by_source_artifact": store.counts_by_source_artifact(collection_id=collection_id),
             "artifacts": per_hive,
+        }
+
+    return handler
+
+
+def _make_query_program_execution_composite(store: EventStore):
+    def handler(request: dict[str, Any]) -> dict[str, Any]:
+        rows = store.program_execution_composite(
+            collection_id=request.get("collection_id"),
+            limit=int(request.get("limit", 1000)),
+            offset=int(request.get("offset", 0)),
+        )
+        return {
+            "rows": rows,
+            "total": store.program_execution_composite_count(
+                collection_id=request.get("collection_id"),
+            ),
         }
 
     return handler
@@ -298,6 +366,10 @@ def build_dispatcher(store: EventStore | None = None) -> Dispatcher:
     dispatcher.register("run_triage_hive", _make_run_triage_hive(store))
     dispatcher.register("run_triage_directory", _make_run_triage_directory(store))
     dispatcher.register("query_events", _make_query_events(store))
+    dispatcher.register(
+        "query_program_execution_composite",
+        _make_query_program_execution_composite(store),
+    )
     return dispatcher
 
 

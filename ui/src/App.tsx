@@ -7,19 +7,23 @@ import {
   type ColumnDef,
   type SortingState,
 } from "@tanstack/react-table";
-import { ArrowDown, ArrowUp, FolderOpen, FolderTree, X } from "lucide-react";
+import { ArrowDown, ArrowUp, FolderOpen, FolderTree, Layers, Table2, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   pingSidecar,
   queryEvents,
+  queryProgramExecutionComposite,
   runTriageDirectory,
   runTriageHive,
+  type ExecutionCompositeRow,
   type ForensicEvent,
   type SidecarPong,
 } from "@/lib/dft";
 import { cn } from "@/lib/utils";
+
+type ViewMode = "events" | "execution";
 
 type SidecarState =
   | { kind: "idle" }
@@ -223,6 +227,9 @@ export default function App() {
   const [debouncedFilter, setDebouncedFilter] = useState("");
   const [sorting, setSorting] = useState<SortingState>([{ id: "timestamp", desc: false }]);
   const [activeTypes, setActiveTypes] = useState<Set<string>>(new Set());
+  const [view, setView] = useState<ViewMode>("events");
+  const [execRows, setExecRows] = useState<ExecutionCompositeRow[]>([]);
+  const [execTotal, setExecTotal] = useState(0);
 
   useEffect(() => {
     pingSidecar()
@@ -243,6 +250,23 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     if (!collection) return;
+    if (view === "execution") {
+      try {
+        const res = await queryProgramExecutionComposite({
+          collection_id: collection.collection_id,
+          limit: 1000,
+        });
+        if (res.ok) {
+          setExecRows(res.rows);
+          setExecTotal(res.total);
+        } else {
+          setSidecar({ kind: "error", message: res.error ?? "composite query failed" });
+        }
+      } catch (err) {
+        setSidecar({ kind: "error", message: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
     const sortCol = sorting[0]?.id;
     const sort_by = sortCol && SORTABLE_COLS.has(sortCol) ? (sortCol as never) : "timestamp";
     const sort_dir = sorting[0]?.desc ? "desc" : "asc";
@@ -274,7 +298,7 @@ export default function App() {
     } catch (err) {
       setSidecar({ kind: "error", message: err instanceof Error ? err.message : String(err) });
     }
-  }, [collection, debouncedFilter, sorting, activeTypes]);
+  }, [collection, view, debouncedFilter, sorting, activeTypes]);
 
   useEffect(() => {
     void refresh();
@@ -397,6 +421,36 @@ export default function App() {
           </span>
         </div>
         <div className="flex items-center gap-3">
+          <div className="flex rounded-md border border-border overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setView("events")}
+              className={cn(
+                "px-3 py-1.5 text-xs font-mono inline-flex items-center gap-1.5",
+                view === "events"
+                  ? "bg-accent text-accent-foreground"
+                  : "bg-muted/30 text-muted-foreground hover:text-foreground",
+              )}
+              disabled={!collection}
+            >
+              <Table2 className="h-3 w-3" />
+              Events
+            </button>
+            <button
+              type="button"
+              onClick={() => setView("execution")}
+              className={cn(
+                "px-3 py-1.5 text-xs font-mono inline-flex items-center gap-1.5 border-l border-border",
+                view === "execution"
+                  ? "bg-accent text-accent-foreground"
+                  : "bg-muted/30 text-muted-foreground hover:text-foreground",
+              )}
+              disabled={!collection}
+            >
+              <Layers className="h-3 w-3" />
+              Execution
+            </button>
+          </div>
           <StatusPill state={sidecar} />
           <Button onClick={openHive} disabled={sidecar.kind === "running"} size="sm">
             <FolderOpen className="h-4 w-4" />
@@ -436,7 +490,7 @@ export default function App() {
         </div>
       </div>
 
-      {collection && chipEntries.length > 0 && (
+      {view === "events" && collection && chipEntries.length > 0 && (
         <div className="flex flex-wrap gap-2 border-b border-border bg-muted/5 px-4 py-2">
           {chipEntries.map(([type, count]) => (
             <Chip
@@ -462,84 +516,164 @@ export default function App() {
       <div className="flex flex-1 overflow-hidden">
         <main className="flex-1 overflow-hidden">
           <div className="h-full overflow-auto">
-            <table className="w-full border-collapse text-left font-mono text-xs">
-              <thead className="sticky top-0 bg-muted/60 backdrop-blur">
-                {table.getHeaderGroups().map((hg) => (
-                  <tr key={hg.id} className="border-b border-border">
-                    {hg.headers.map((h) => {
-                      const sortDir = h.column.getIsSorted();
-                      return (
-                        <th
-                          key={h.id}
-                          className={cn(
-                            "select-none px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground",
-                            SORTABLE_COLS.has(h.column.id) && "cursor-pointer hover:text-foreground",
-                          )}
-                          onClick={
-                            SORTABLE_COLS.has(h.column.id)
-                              ? h.column.getToggleSortingHandler()
-                              : undefined
-                          }
-                        >
-                          <span className="inline-flex items-center gap-1">
-                            {flexRender(h.column.columnDef.header, h.getContext())}
-                            {sortDir === "asc" && <ArrowUp className="h-3 w-3" />}
-                            {sortDir === "desc" && <ArrowDown className="h-3 w-3" />}
-                          </span>
-                        </th>
-                      );
-                    })}
-                  </tr>
-                ))}
-              </thead>
-              <tbody>
-                {table.getRowModel().rows.length === 0 ? (
-                  <tr>
-                    <td
-                      colSpan={columns.length}
-                      className="px-3 py-16 text-center text-muted-foreground"
-                    >
-                      {collection ? (
-                        <>No events match the current filter.</>
-                      ) : (
-                        <>
-                          No events. Click <span className="text-foreground">Open hive…</span>
-                          {" "}or <span className="text-foreground">Open directory…</span> to begin.
-                        </>
-                      )}
-                    </td>
-                  </tr>
-                ) : (
-                  table.getRowModel().rows.map((row) => {
-                    const isSelected = selected?.event_id === row.original.event_id;
-                    return (
-                      <tr
-                        key={row.id}
-                        className={cn(
-                          "cursor-pointer border-b border-border",
-                          isSelected ? "bg-accent/20" : "hover:bg-muted/40",
-                        )}
-                        onClick={() => setSelected(row.original)}
+            {view === "events" ? (
+              <table className="w-full border-collapse text-left font-mono text-xs">
+                <thead className="sticky top-0 bg-muted/60 backdrop-blur">
+                  {table.getHeaderGroups().map((hg) => (
+                    <tr key={hg.id} className="border-b border-border">
+                      {hg.headers.map((h) => {
+                        const sortDir = h.column.getIsSorted();
+                        return (
+                          <th
+                            key={h.id}
+                            className={cn(
+                              "select-none px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground",
+                              SORTABLE_COLS.has(h.column.id) && "cursor-pointer hover:text-foreground",
+                            )}
+                            onClick={
+                              SORTABLE_COLS.has(h.column.id)
+                                ? h.column.getToggleSortingHandler()
+                                : undefined
+                            }
+                          >
+                            <span className="inline-flex items-center gap-1">
+                              {flexRender(h.column.columnDef.header, h.getContext())}
+                              {sortDir === "asc" && <ArrowUp className="h-3 w-3" />}
+                              {sortDir === "desc" && <ArrowDown className="h-3 w-3" />}
+                            </span>
+                          </th>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </thead>
+                <tbody>
+                  {table.getRowModel().rows.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={columns.length}
+                        className="px-3 py-16 text-center text-muted-foreground"
                       >
-                        {row.getVisibleCells().map((cell) => (
-                          <td key={cell.id} className="px-3 py-1.5 align-top">
-                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                          </td>
-                        ))}
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
+                        {collection ? (
+                          <>No events match the current filter.</>
+                        ) : (
+                          <>
+                            No events. Click <span className="text-foreground">Open hive…</span>
+                            {" "}or <span className="text-foreground">Open directory…</span> to begin.
+                          </>
+                        )}
+                      </td>
+                    </tr>
+                  ) : (
+                    table.getRowModel().rows.map((row) => {
+                      const isSelected = selected?.event_id === row.original.event_id;
+                      return (
+                        <tr
+                          key={row.id}
+                          className={cn(
+                            "cursor-pointer border-b border-border",
+                            isSelected ? "bg-accent/20" : "hover:bg-muted/40",
+                          )}
+                          onClick={() => setSelected(row.original)}
+                        >
+                          {row.getVisibleCells().map((cell) => (
+                            <td key={cell.id} className="px-3 py-1.5 align-top">
+                              {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                            </td>
+                          ))}
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            ) : (
+              <ExecutionTable rows={execRows} hasCollection={!!collection} />
+            )}
           </div>
         </main>
         <DetailPane event={selected} onClose={() => setSelected(null)} />
       </div>
 
       <footer className="border-t border-border bg-muted/30 px-4 py-1 font-mono text-xs text-muted-foreground">
-        events: {events.length} of {total} · findings: 0 · M3
+        {view === "events"
+          ? `events: ${events.length} of ${total} · findings: 0 · M5`
+          : `unique programs: ${execRows.length} of ${execTotal} · findings: 0 · M5`}
       </footer>
     </div>
+  );
+}
+
+function ExecutionTable({
+  rows,
+  hasCollection,
+}: {
+  rows: ExecutionCompositeRow[];
+  hasCollection: boolean;
+}) {
+  if (rows.length === 0) {
+    return (
+      <table className="w-full border-collapse text-left font-mono text-xs">
+        <tbody>
+          <tr>
+            <td className="px-3 py-16 text-center text-muted-foreground">
+              {hasCollection ? (
+                <>No program_execution events in this collection.</>
+              ) : (
+                <>
+                  No collection loaded. Click <span className="text-foreground">Open directory…</span>{" "}
+                  on a folder that includes Prefetch, AmCache, or a SYSTEM hive.
+                </>
+              )}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    );
+  }
+  return (
+    <table className="w-full border-collapse text-left font-mono text-xs">
+      <thead className="sticky top-0 bg-muted/60 backdrop-blur">
+        <tr className="border-b border-border">
+          <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground">Program</th>
+          <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground">First seen</th>
+          <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground">Last seen</th>
+          <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground">Sources</th>
+          <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground text-right">Events</th>
+          <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground text-right">Runs</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row) => (
+          <tr key={row.program_path} className="border-b border-border hover:bg-muted/40">
+            <td className="px-3 py-1.5 align-top">
+              <span className="block max-w-[640px] truncate" title={row.program_path}>
+                {row.program_path}
+              </span>
+            </td>
+            <td className="px-3 py-1.5 align-top whitespace-nowrap text-muted-foreground">
+              {row.first_seen ?? "—"}
+            </td>
+            <td className="px-3 py-1.5 align-top whitespace-nowrap">{row.last_seen ?? "—"}</td>
+            <td className="px-3 py-1.5 align-top">
+              <div className="flex flex-wrap gap-1">
+                {row.sources.map((s) => (
+                  <span
+                    key={s}
+                    className="rounded border border-border bg-muted/30 px-1.5 py-0 text-[10px]"
+                  >
+                    {s}
+                  </span>
+                ))}
+              </div>
+            </td>
+            <td className="px-3 py-1.5 align-top text-right">{row.event_count}</td>
+            <td className="px-3 py-1.5 align-top text-right">
+              {row.total_runs > 0 ? row.total_runs : "—"}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }

@@ -57,6 +57,17 @@ async fn query_events(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn query_program_execution_composite(
+    sidecar: State<'_, Sidecar>,
+    args: Value,
+) -> Result<Value, String> {
+    sidecar
+        .request("query_program_execution_composite", args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -78,6 +89,7 @@ pub fn run() {
             run_triage_hive,
             run_triage_directory,
             query_events,
+            query_program_execution_composite,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

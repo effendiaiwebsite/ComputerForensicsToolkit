@@ -109,3 +109,27 @@ export async function runTriageDirectory(dirPath: string): Promise<TriageDirecto
 export async function queryEvents(args: QueryEventsArgs): Promise<QueryEventsResult> {
   return invoke<QueryEventsResult>("query_events", { args });
 }
+
+export type ExecutionCompositeRow = {
+  program_path: string;
+  first_seen: string | null;
+  last_seen: string | null;
+  sources: string[];
+  event_count: number;
+  total_runs: number;
+};
+
+export type ExecutionCompositeResult = {
+  ok: boolean;
+  rows: ExecutionCompositeRow[];
+  total: number;
+  error?: string;
+};
+
+export async function queryProgramExecutionComposite(args: {
+  collection_id?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<ExecutionCompositeResult> {
+  return invoke<ExecutionCompositeResult>("query_program_execution_composite", { args });
+}

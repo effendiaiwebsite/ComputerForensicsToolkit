@@ -208,6 +208,100 @@ class EventStore:
             ).fetchall()
         return {row["event_type"]: int(row["c"]) for row in rows}
 
+    def program_execution_composite(
+        self,
+        *,
+        collection_id: str | None = None,
+        limit: int = 1000,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Union all ``program_execution`` events, deduplicated by program path.
+
+        Pulls the program path out of the evidence JSON, falling back to
+        ``executable_filename`` (Prefetch) then ``program_name`` (UserAssist)
+        when ``program_path`` isn't set. Aggregates per program: earliest +
+        latest sighting, the distinct sources that saw it, total event count
+        across sources, and the summed ``run_count`` where the source records
+        one (Prefetch always; AmCache when present).
+        """
+        coalesce_path = (
+            "COALESCE("
+            "json_extract(evidence_json, '$.program_path'), "
+            "json_extract(evidence_json, '$.executable_filename'), "
+            "json_extract(evidence_json, '$.program_name')"
+            ")"
+        )
+        where_extra = ""
+        params: list[Any] = []
+        if collection_id is not None:
+            where_extra = " AND collection_id = ?"
+            params.append(collection_id)
+
+        sql = f"""
+            WITH execs AS (
+                SELECT
+                    timestamp,
+                    source_artifact,
+                    LOWER({coalesce_path}) AS program_key,
+                    {coalesce_path} AS program_path,
+                    CAST(json_extract(evidence_json, '$.run_count') AS INTEGER) AS run_count
+                FROM events
+                WHERE event_type = 'program_execution'{where_extra}
+            )
+            SELECT
+                program_path,
+                MIN(timestamp) AS first_seen,
+                MAX(timestamp) AS last_seen,
+                GROUP_CONCAT(DISTINCT source_artifact) AS sources,
+                COUNT(*) AS event_count,
+                COALESCE(SUM(run_count), 0) AS total_runs
+            FROM execs
+            WHERE program_key IS NOT NULL
+            GROUP BY program_key
+            ORDER BY last_seen DESC, program_path ASC
+            LIMIT ? OFFSET ?
+        """
+        params.extend([limit, offset])
+        rows = self._conn.execute(sql, params).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            sources = [s for s in (r["sources"] or "").split(",") if s]
+            out.append({
+                "program_path": r["program_path"],
+                "first_seen": r["first_seen"],
+                "last_seen": r["last_seen"],
+                "sources": sorted(sources),
+                "event_count": int(r["event_count"]),
+                "total_runs": int(r["total_runs"]) if r["total_runs"] is not None else 0,
+            })
+        return out
+
+    def program_execution_composite_count(self, *, collection_id: str | None = None) -> int:
+        """Number of distinct programs in the composite view."""
+        coalesce_path = (
+            "COALESCE("
+            "json_extract(evidence_json, '$.program_path'), "
+            "json_extract(evidence_json, '$.executable_filename'), "
+            "json_extract(evidence_json, '$.program_name')"
+            ")"
+        )
+        where_extra = ""
+        params: list[Any] = []
+        if collection_id is not None:
+            where_extra = " AND collection_id = ?"
+            params.append(collection_id)
+        sql = f"""
+            SELECT COUNT(*) AS c FROM (
+                SELECT LOWER({coalesce_path}) AS k
+                FROM events
+                WHERE event_type = 'program_execution'{where_extra}
+                  AND {coalesce_path} IS NOT NULL
+                GROUP BY k
+            )
+        """
+        row = self._conn.execute(sql, params).fetchone()
+        return int(row["c"])
+
     def counts_by_source_artifact(self, *, collection_id: str | None = None) -> dict[str, int]:
         if collection_id is None:
             rows = self._conn.execute(
