@@ -1,0 +1,25 @@
+id: execution-lolbin-rundll32-001
+title: LOLBin execution — rundll32.exe
+description: |
+  rundll32.exe is a heavily-abused LOLBin: attackers use it to load
+  arbitrary DLL exports without a child-process binary signature trail.
+  Prefetch / AmCache / ShimCache hits on rundll32 are routine on a
+  healthy host, so this fires as low severity and is most useful when
+  correlated with a fresh DLL in a user-writable path.
+severity: low
+mitre:
+  techniques: [T1218.011]
+  tactics: [defense_evasion, execution]
+references:
+  - https://attack.mitre.org/techniques/T1218/011/
+  - https://lolbas-project.github.io/lolbas/Binaries/Rundll32/
+
+match:
+  event_type: program_execution
+  any_of:
+    - evidence.program_path:
+        regex: '(?i)\\rundll32\.exe$'
+    - evidence.executable_filename:
+        regex: '(?i)^RUNDLL32\.EXE$'
+    - evidence.program_name:
+        regex: '(?i)\\rundll32\.exe'

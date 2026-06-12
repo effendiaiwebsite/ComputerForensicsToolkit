@@ -1,0 +1,20 @@
+[
+  {
+    "event_id": "n1",
+    "event_type": "shell_command",
+    "source_artifact": "evtx.microsoft_windows_powershell_operational",
+    "evidence": {
+      "event_id": 4104,
+      "ScriptBlockText": "Get-ChildItem -Path C:\\Windows\\System32 -Filter *.dll"
+    }
+  },
+  {
+    "event_id": "n2",
+    "event_type": "shell_command",
+    "source_artifact": "evtx.microsoft_windows_powershell_operational",
+    "evidence": {
+      "event_id": 4103,
+      "ScriptBlockText": "-EncodedCommand"
+    }
+  }
+]

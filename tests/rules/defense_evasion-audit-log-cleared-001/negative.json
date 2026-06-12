@@ -1,0 +1,14 @@
+[
+  {
+    "event_id": "n1",
+    "event_type": "logon",
+    "source_artifact": "evtx.security",
+    "evidence": { "event_id": 4624 }
+  },
+  {
+    "event_id": "n2",
+    "event_type": "security_event",
+    "source_artifact": "evtx.system",
+    "evidence": { "event_id": 1102 }
+  }
+]

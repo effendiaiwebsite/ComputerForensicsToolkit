@@ -1,0 +1,14 @@
+[
+  {
+    "event_id": "n1",
+    "event_type": "scheduled_task",
+    "source_artifact": "evtx.microsoft_windows_taskscheduler_operational",
+    "evidence": { "event_id": 140, "TaskName": "\\Foo\\Bar" }
+  },
+  {
+    "event_id": "n2",
+    "event_type": "security_event",
+    "source_artifact": "evtx.security",
+    "evidence": { "event_id": 106 }
+  }
+]

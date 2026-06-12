@@ -1,0 +1,22 @@
+id: persistence-run-key-userwritable-001
+title: Run key entry pointing to user-writable location
+description: |
+  A Run / RunOnce registry value pointing to a binary in %AppData%, %Temp%,
+  %LocalAppData%, or %Public% is a hallmark of commodity malware persistence.
+  Legitimate auto-start entries almost always live in Program Files or under
+  C:\Windows\System32.
+severity: high
+mitre:
+  techniques: [T1547.001]
+  tactics: [persistence]
+references:
+  - https://attack.mitre.org/techniques/T1547/001/
+author: dft
+date: 2026-06-12
+
+match:
+  event_type: persistence_entry
+  source_artifact:
+    in: [registry.ntuser, registry.software]
+  evidence.value_data:
+    regex: '(?i)\\(AppData|Local\\Temp|Roaming|ProgramData\\Temp|Users\\Public)\\'

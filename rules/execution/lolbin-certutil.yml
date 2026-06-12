@@ -1,0 +1,23 @@
+id: execution-lolbin-certutil-001
+title: LOLBin execution — certutil.exe
+description: |
+  certutil.exe is one of the highest-signal LOLBins: outside of certificate
+  enrollment workflows it is heavily abused for `-urlcache -split -f` style
+  downloads and base64 decoding of dropped payloads. Execution of certutil
+  on an endpoint that doesn't routinely manage certificates is suspicious.
+severity: medium
+mitre:
+  techniques: [T1140, T1105]
+  tactics: [defense_evasion, command_and_control]
+references:
+  - https://lolbas-project.github.io/lolbas/Binaries/Certutil/
+
+match:
+  event_type: program_execution
+  any_of:
+    - evidence.program_path:
+        regex: '(?i)\\certutil\.exe$'
+    - evidence.executable_filename:
+        regex: '(?i)^CERTUTIL\.EXE$'
+    - evidence.program_name:
+        regex: '(?i)\\certutil\.exe'

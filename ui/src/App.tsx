@@ -7,27 +7,39 @@ import {
   type ColumnDef,
   type SortingState,
 } from "@tanstack/react-table";
-import { Activity, ArrowDown, ArrowUp, FolderOpen, FolderTree, Layers, Table2, X } from "lucide-react";
+import { Activity, ArrowDown, ArrowUp, FolderOpen, FolderTree, Layers, ShieldAlert, Table2, X } from "lucide-react";
 
 import { Timeline } from "@/components/Timeline";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+  evaluateRules,
   getEvent,
   pingSidecar,
   queryEvents,
+  queryFindings,
   queryProgramExecutionComposite,
   queryTimeline,
   runTriageDirectory,
   runTriageHive,
   type ExecutionCompositeRow,
+  type Finding,
   type ForensicEvent,
   type SidecarPong,
   type TimelinePoint,
 } from "@/lib/dft";
 import { cn } from "@/lib/utils";
 
-type ViewMode = "events" | "execution" | "timeline";
+type ViewMode = "events" | "execution" | "timeline" | "findings";
+
+const SEVERITY_BADGE: Record<Finding["severity"], string> = {
+  critical: "bg-error/20 text-error border-error/40",
+  high: "bg-warning/20 text-warning border-warning/40",
+  medium: "bg-accent/20 text-accent border-accent/40",
+  low: "bg-muted/40 text-muted-foreground border-border",
+};
+
+const SEVERITY_ORDER: Finding["severity"][] = ["critical", "high", "medium", "low"];
 
 type SidecarState =
   | { kind: "idle" }
@@ -237,6 +249,10 @@ export default function App() {
   const [timelineCategories, setTimelineCategories] = useState<string[]>([]);
   const [timelinePoints, setTimelinePoints] = useState<TimelinePoint[]>([]);
   const [timelineSkippedNull, setTimelineSkippedNull] = useState(0);
+  const [findings, setFindings] = useState<Finding[]>([]);
+  const [findingsTotal, setFindingsTotal] = useState(0);
+  const [findingsBySeverity, setFindingsBySeverity] = useState<Record<string, number>>({});
+  const [activeSeverity, setActiveSeverity] = useState<Set<Finding["severity"]>>(new Set());
 
   useEffect(() => {
     pingSidecar()
@@ -294,6 +310,25 @@ export default function App() {
       }
       return;
     }
+    if (view === "findings") {
+      try {
+        const res = await queryFindings({
+          collection_id: collection.collection_id,
+          severities: activeSeverity.size ? Array.from(activeSeverity) : undefined,
+          limit: 500,
+        });
+        if (res.ok) {
+          setFindings(res.findings);
+          setFindingsTotal(res.total);
+          setFindingsBySeverity(res.by_severity);
+        } else {
+          setSidecar({ kind: "error", message: res.error ?? "findings query failed" });
+        }
+      } catch (err) {
+        setSidecar({ kind: "error", message: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
     const sortCol = sorting[0]?.id;
     const sort_by = sortCol && SORTABLE_COLS.has(sortCol) ? (sortCol as never) : "timestamp";
     const sort_dir = sorting[0]?.desc ? "desc" : "asc";
@@ -325,7 +360,7 @@ export default function App() {
     } catch (err) {
       setSidecar({ kind: "error", message: err instanceof Error ? err.message : String(err) });
     }
-  }, [collection, view, debouncedFilter, sorting, activeTypes]);
+  }, [collection, view, debouncedFilter, sorting, activeTypes, activeSeverity]);
 
   useEffect(() => {
     void refresh();
@@ -350,6 +385,10 @@ export default function App() {
     setSelected(null);
     setEvents([]);
     setActiveTypes(new Set());
+    setActiveSeverity(new Set());
+    setFindings([]);
+    setFindingsTotal(0);
+    setFindingsBySeverity({});
     try {
       const res = await runTriageHive({ hive_path: path });
       if (!res.ok) {
@@ -364,6 +403,13 @@ export default function App() {
         by_event_type: res.by_event_type,
         by_source_artifact: {},
       });
+      setSidecar({ kind: "running", what: "evaluating rules" });
+      try {
+        const ev = await evaluateRules(res.collection_id);
+        if (ev.ok) setFindingsBySeverity(ev.by_severity);
+      } catch (err) {
+        console.warn("rule eval failed", err);
+      }
       const pong = await pingSidecar();
       if (pong.ok) setSidecar({ kind: "ok", info: pong });
     } catch (err) {
@@ -390,6 +436,10 @@ export default function App() {
     setSelected(null);
     setEvents([]);
     setActiveTypes(new Set());
+    setActiveSeverity(new Set());
+    setFindings([]);
+    setFindingsTotal(0);
+    setFindingsBySeverity({});
     try {
       const res = await runTriageDirectory(dir);
       if (!res.ok) {
@@ -404,6 +454,13 @@ export default function App() {
         by_event_type: res.by_event_type,
         by_source_artifact: res.by_source_artifact,
       });
+      setSidecar({ kind: "running", what: "evaluating rules" });
+      try {
+        const ev = await evaluateRules(res.collection_id);
+        if (ev.ok) setFindingsBySeverity(ev.by_severity);
+      } catch (err) {
+        console.warn("rule eval failed", err);
+      }
       const pong = await pingSidecar();
       if (pong.ok) setSidecar({ kind: "ok", info: pong });
     } catch (err) {
@@ -444,7 +501,7 @@ export default function App() {
             DFT — Digital Forensics Triage Toolkit
           </h1>
           <span className="font-mono text-xs text-muted-foreground">
-            Phase 1 · Windows · M6
+            Phase 1 · Windows · M7
           </span>
         </div>
         <div className="flex items-center gap-3">
@@ -490,6 +547,25 @@ export default function App() {
             >
               <Activity className="h-3 w-3" />
               Timeline
+            </button>
+            <button
+              type="button"
+              onClick={() => setView("findings")}
+              className={cn(
+                "px-3 py-1.5 text-xs font-mono inline-flex items-center gap-1.5 border-l border-border",
+                view === "findings"
+                  ? "bg-accent text-accent-foreground"
+                  : "bg-muted/30 text-muted-foreground hover:text-foreground",
+              )}
+              disabled={!collection}
+            >
+              <ShieldAlert className="h-3 w-3" />
+              Findings
+              {findingsBySeverity && (findingsBySeverity.critical || findingsBySeverity.high) ? (
+                <span className="rounded bg-error/20 text-error border border-error/40 px-1.5 py-0 text-[10px]">
+                  {(findingsBySeverity.critical ?? 0) + (findingsBySeverity.high ?? 0)}
+                </span>
+              ) : null}
             </button>
           </div>
           <StatusPill state={sidecar} />
@@ -630,11 +706,36 @@ export default function App() {
               </table>
             ) : view === "execution" ? (
               <ExecutionTable rows={execRows} hasCollection={!!collection} />
-            ) : (
+            ) : view === "timeline" ? (
               <Timeline
                 categories={timelineCategories}
                 points={timelinePoints}
                 onEventClick={async (eventId) => {
+                  try {
+                    const res = await getEvent(eventId);
+                    if (res.ok && res.event) setSelected(res.event);
+                  } catch (err) {
+                    setSidecar({
+                      kind: "error",
+                      message: err instanceof Error ? err.message : String(err),
+                    });
+                  }
+                }}
+              />
+            ) : (
+              <FindingsTable
+                findings={findings}
+                hasCollection={!!collection}
+                activeSeverity={activeSeverity}
+                onToggleSeverity={(s) =>
+                  setActiveSeverity((prev) => {
+                    const next = new Set(prev);
+                    next.has(s) ? next.delete(s) : next.add(s);
+                    return next;
+                  })
+                }
+                bySeverity={findingsBySeverity}
+                onJump={async (eventId) => {
                   try {
                     const res = await getEvent(eventId);
                     if (res.ok && res.event) setSelected(res.event);
@@ -654,11 +755,120 @@ export default function App() {
 
       <footer className="border-t border-border bg-muted/30 px-4 py-1 font-mono text-xs text-muted-foreground">
         {view === "events"
-          ? `events: ${events.length} of ${total} · findings: 0 · M6`
+          ? `events: ${events.length} of ${total} · findings: ${findingsTotal} · M7`
           : view === "execution"
-          ? `unique programs: ${execRows.length} of ${execTotal} · findings: 0 · M6`
-          : `timeline: ${timelinePoints.length} dated points across ${timelineCategories.length} tracks (${timelineSkippedNull} undated) · findings: 0 · M6`}
+          ? `unique programs: ${execRows.length} of ${execTotal} · findings: ${findingsTotal} · M7`
+          : view === "timeline"
+          ? `timeline: ${timelinePoints.length} dated points across ${timelineCategories.length} tracks (${timelineSkippedNull} undated) · findings: ${findingsTotal} · M7`
+          : `findings: ${findings.length} of ${findingsTotal} · M7`}
       </footer>
+    </div>
+  );
+}
+
+function FindingsTable({
+  findings,
+  hasCollection,
+  activeSeverity,
+  onToggleSeverity,
+  bySeverity,
+  onJump,
+}: {
+  findings: Finding[];
+  hasCollection: boolean;
+  activeSeverity: Set<Finding["severity"]>;
+  onToggleSeverity: (s: Finding["severity"]) => void;
+  bySeverity: Record<string, number>;
+  onJump: (eventId: string) => void;
+}) {
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/10 px-4 py-2">
+        {SEVERITY_ORDER.map((sev) => {
+          const count = bySeverity[sev] ?? 0;
+          const active = activeSeverity.has(sev);
+          return (
+            <button
+              key={sev}
+              type="button"
+              onClick={() => onToggleSeverity(sev)}
+              disabled={count === 0}
+              className={cn(
+                "inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-mono uppercase tracking-wide transition-colors",
+                count === 0 && "opacity-30 pointer-events-none",
+                active ? SEVERITY_BADGE[sev] : "border-border bg-muted/30 text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <span>{sev}</span>
+              <span className="rounded bg-background/40 px-1.5 py-0 text-[10px]">{count}</span>
+            </button>
+          );
+        })}
+      </div>
+      <div className="flex-1 overflow-auto">
+        {!hasCollection ? (
+          <div className="px-3 py-16 text-center text-muted-foreground font-mono text-xs">
+            No collection. Open a hive or a triage directory to evaluate rules.
+          </div>
+        ) : findings.length === 0 ? (
+          <div className="px-3 py-16 text-center text-muted-foreground font-mono text-xs">
+            No findings match the current severity filter.
+          </div>
+        ) : (
+          <table className="w-full border-collapse text-left font-mono text-xs">
+            <thead className="sticky top-0 bg-muted/60 backdrop-blur">
+              <tr className="border-b border-border">
+                <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground">Severity</th>
+                <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground">Rule</th>
+                <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground">MITRE</th>
+                <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground">Evidence</th>
+              </tr>
+            </thead>
+            <tbody>
+              {findings.map((f) => (
+                <tr
+                  key={f.finding_id}
+                  className="border-b border-border hover:bg-muted/40 cursor-pointer"
+                  onClick={() => f.evidence_event_ids[0] && onJump(f.evidence_event_ids[0])}
+                >
+                  <td className="px-3 py-1.5 align-top">
+                    <span
+                      className={cn(
+                        "inline-flex rounded border px-1.5 py-0 text-[10px] uppercase tracking-wide",
+                        SEVERITY_BADGE[f.severity],
+                      )}
+                    >
+                      {f.severity}
+                    </span>
+                  </td>
+                  <td className="px-3 py-1.5 align-top">
+                    <div className="text-foreground">{f.rule_title}</div>
+                    <div className="text-muted-foreground text-[10px]">{f.rule_id}</div>
+                  </td>
+                  <td className="px-3 py-1.5 align-top">
+                    <div className="flex flex-wrap gap-1">
+                      {f.mitre_techniques.map((t) => (
+                        <span
+                          key={t}
+                          className="rounded border border-accent/40 bg-accent/10 px-1.5 py-0 text-[10px] text-accent"
+                          title={f.mitre_tactics.join(", ")}
+                        >
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  </td>
+                  <td className="px-3 py-1.5 align-top">
+                    <span className="block max-w-[640px] truncate" title={f.summary}>
+                      {f.summary}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
     </div>
   );
 }

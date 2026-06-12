@@ -1,0 +1,17 @@
+id: defense_evasion-audit-log-cleared-001
+title: Windows Security audit log cleared (EventID 1102)
+description: |
+  EventID 1102 in the Security channel fires when an administrator clears
+  the audit log. This is a deliberate action with very few legitimate uses
+  outside of a fresh-OS configuration; it almost always merits an analyst
+  review during an investigation.
+severity: critical
+mitre:
+  techniques: [T1070.001]
+  tactics: [defense_evasion]
+references:
+  - https://attack.mitre.org/techniques/T1070/001/
+
+match:
+  source_artifact: evtx.security
+  evidence.event_id: 1102

@@ -1,0 +1,24 @@
+id: execution-lolbin-mshta-001
+title: LOLBin execution — mshta.exe
+description: |
+  mshta.exe (Microsoft HTML Application Host) executes .hta files and is a
+  classic LOLBin used to run JScript / VBScript without dropping a binary.
+  Legitimate uses are rare in modern enterprise images; observing mshta in
+  Prefetch / AmCache / ShimCache deserves a look.
+severity: medium
+mitre:
+  techniques: [T1218.005]
+  tactics: [defense_evasion, execution]
+references:
+  - https://attack.mitre.org/techniques/T1218/005/
+  - https://lolbas-project.github.io/lolbas/Binaries/Mshta/
+
+match:
+  event_type: program_execution
+  any_of:
+    - evidence.program_path:
+        regex: '(?i)\\mshta\.exe$'
+    - evidence.executable_filename:
+        regex: '(?i)^MSHTA\.EXE$'
+    - evidence.program_name:
+        regex: '(?i)\\mshta\.exe'

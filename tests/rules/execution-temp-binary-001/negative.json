@@ -1,0 +1,20 @@
+[
+  {
+    "event_id": "n1",
+    "event_type": "program_execution",
+    "source_artifact": "prefetch",
+    "evidence": { "program_path": "C:\\Windows\\System32\\svchost.exe" }
+  },
+  {
+    "event_id": "n2",
+    "event_type": "program_execution",
+    "source_artifact": "registry.amcache",
+    "evidence": { "program_path": "C:\\Program Files\\Common Files\\Adobe\\Reader.exe" }
+  },
+  {
+    "event_id": "n3",
+    "event_type": "persistence_entry",
+    "source_artifact": "registry.ntuser",
+    "evidence": { "value_data": "C:\\Users\\alice\\AppData\\Local\\Temp\\stub.exe" }
+  }
+]

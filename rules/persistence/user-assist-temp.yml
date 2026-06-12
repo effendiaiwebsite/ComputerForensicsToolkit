@@ -1,0 +1,20 @@
+id: persistence-user-assist-temp-001
+title: UserAssist records execution from %Temp% or %AppData%
+description: |
+  UserAssist tracks interactive program executions per user (decoded via
+  ROT13). A program path inside %Temp%, %AppData%, %Downloads%, or %Public%
+  appearing in UserAssist is a strong indicator the user (or something
+  posing as them) double-clicked a binary delivered through phishing or
+  drive-by download.
+severity: medium
+mitre:
+  techniques: [T1204.002]
+  tactics: [execution]
+references:
+  - https://attack.mitre.org/techniques/T1204/002/
+
+match:
+  source_artifact: registry.ntuser
+  event_type: program_execution
+  evidence.program_name:
+    regex: '(?i)\\(AppData|Local\\Temp|Roaming|Downloads|Users\\Public|ProgramData\\Temp)\\'

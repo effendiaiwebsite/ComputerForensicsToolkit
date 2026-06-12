@@ -1,0 +1,14 @@
+[
+  {
+    "event_id": "p1",
+    "event_type": "program_execution",
+    "source_artifact": "prefetch",
+    "evidence": { "executable_filename": "REGSVR32.EXE" }
+  },
+  {
+    "event_id": "p2",
+    "event_type": "program_execution",
+    "source_artifact": "registry.amcache",
+    "evidence": { "program_path": "C:\\Windows\\System32\\regsvr32.exe" }
+  }
+]

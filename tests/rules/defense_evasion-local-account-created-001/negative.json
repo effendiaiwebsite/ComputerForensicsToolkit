@@ -1,0 +1,14 @@
+[
+  {
+    "event_id": "n1",
+    "event_type": "account_change",
+    "source_artifact": "evtx.security",
+    "evidence": { "event_id": 4732, "MemberName": "alice" }
+  },
+  {
+    "event_id": "n2",
+    "event_type": "account_change",
+    "source_artifact": "registry.sam",
+    "evidence": { "rid": 1001, "username": "alice" }
+  }
+]

@@ -8,6 +8,7 @@ dependencies = [
     "libfwsi-python>=20240000",
     "python-evtx>=0.8.0",
     "libscca-python>=20240000",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]

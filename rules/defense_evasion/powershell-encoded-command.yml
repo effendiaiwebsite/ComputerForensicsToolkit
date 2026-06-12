@@ -1,0 +1,22 @@
+id: defense_evasion-powershell-encoded-command-001
+title: PowerShell script block uses encoded / obfuscated command
+description: |
+  PowerShell `-EncodedCommand` (and its abbreviations `-enc`, `-e`,
+  `-ec`) along with calls to `FromBase64String` are classic obfuscation
+  techniques in attacker tradecraft. They are heavily used by Cobalt
+  Strike's PowerShell stager, Empire, and most living-off-the-land
+  loaders. Legitimate admin scripts rarely encode their own bodies.
+severity: high
+mitre:
+  techniques: [T1059.001, T1027]
+  tactics: [execution, defense_evasion]
+references:
+  - https://attack.mitre.org/techniques/T1059/001/
+  - https://attack.mitre.org/techniques/T1027/
+
+match:
+  source_artifact: evtx.microsoft_windows_powershell_operational
+  event_type: shell_command
+  evidence.event_id: 4104
+  evidence.ScriptBlockText:
+    regex: '(?i)(-enc(odedcommand)?\s|FromBase64String|IEX\s*\(\s*\[?System\.)'

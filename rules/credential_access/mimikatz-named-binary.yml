@@ -1,0 +1,23 @@
+id: credential_access-mimikatz-named-binary-001
+title: Program with mimikatz/lazagne in the name observed in execution evidence
+description: |
+  An execution artifact (Prefetch, AmCache, ShimCache, UserAssist) showing
+  a binary named after a credential-dumping tool is a near-certain finding.
+  Attackers occasionally rename these binaries, but lazy or in-development
+  use commonly leaves the original name intact.
+severity: critical
+mitre:
+  techniques: [T1003.001, T1003.005]
+  tactics: [credential_access]
+references:
+  - https://attack.mitre.org/techniques/T1003/001/
+
+match:
+  event_type: program_execution
+  any_of:
+    - evidence.program_path:
+        regex: '(?i)\\(mimikatz|lazagne|hashdump|secretsdump|procdump).*\.exe'
+    - evidence.executable_filename:
+        regex: '(?i)^(MIMIKATZ|LAZAGNE|HASHDUMP|SECRETSDUMP|PROCDUMP).*\.EXE$'
+    - evidence.program_name:
+        regex: '(?i)\\(mimikatz|lazagne|hashdump|secretsdump|procdump).*\.exe'

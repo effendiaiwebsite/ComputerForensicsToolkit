@@ -12,9 +12,12 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from pathlib import Path
+
 from core import SCHEMA_VERSION, __version__
 from core.events import Event
 from core.ipc import Dispatcher, serve_stdio
+from core.rules import Rule, evaluate_rules as _eval_rules, load_rules_from_dir
 from core.store import EventStore
 
 log = logging.getLogger(__name__)
@@ -443,8 +446,69 @@ def _make_query_events(store: EventStore):
     return handler
 
 
-def build_dispatcher(store: EventStore | None = None) -> Dispatcher:
+def _default_rules_dir() -> Path:
+    # core/__main__.py lives at <repo>/core/, rules live at <repo>/rules/.
+    return Path(__file__).resolve().parent.parent / "rules"
+
+
+def _make_evaluate_rules(store: EventStore, rules_dir: Path):
+    def handler(request: dict[str, Any]) -> dict[str, Any]:
+        collection_id = request.get("collection_id")
+        if not isinstance(collection_id, str) or not collection_id:
+            return {"ok": False, "error": "missing 'collection_id' string"}
+
+        try:
+            rules: list[Rule] = load_rules_from_dir(rules_dir)
+        except Exception as exc:
+            return {"ok": False, "error": f"rule load failed: {exc}"}
+
+        events_iter = store.query_events(collection_id=collection_id, limit=10_000_000)
+        store.clear_findings(collection_id=collection_id)
+        findings = _eval_rules(rules, events_iter, collection_id=collection_id)
+        inserted = store.insert_findings(findings)
+
+        by_severity: dict[str, int] = {}
+        by_rule: dict[str, int] = {}
+        for f in findings:
+            by_severity[f.severity] = by_severity.get(f.severity, 0) + 1
+            by_rule[f.rule_id] = by_rule.get(f.rule_id, 0) + 1
+        return {
+            "collection_id": collection_id,
+            "rules_loaded": len(rules),
+            "findings_count": inserted,
+            "by_severity": by_severity,
+            "by_rule": by_rule,
+        }
+
+    return handler
+
+
+def _make_query_findings(store: EventStore):
+    def handler(request: dict[str, Any]) -> dict[str, Any]:
+        rows = store.query_findings(
+            collection_id=request.get("collection_id"),
+            severities=request.get("severities"),
+            tactic=request.get("tactic"),
+            examiner_status=request.get("examiner_status"),
+            limit=int(request.get("limit", 1000)),
+            offset=int(request.get("offset", 0)),
+        )
+        return {
+            "findings": rows,
+            "total": store.count_findings(collection_id=request.get("collection_id")),
+            "by_severity": store.counts_by_severity(collection_id=request.get("collection_id")),
+        }
+
+    return handler
+
+
+def build_dispatcher(
+    store: EventStore | None = None,
+    *,
+    rules_dir: Path | None = None,
+) -> Dispatcher:
     store = store or EventStore()
+    rules_dir = rules_dir or _default_rules_dir()
     dispatcher = Dispatcher()
     dispatcher.register("ping", _ping)
     dispatcher.register("run_triage_system_hive", _make_run_triage_system_hive(store))
@@ -463,6 +527,8 @@ def build_dispatcher(store: EventStore | None = None) -> Dispatcher:
         return {"event": row}
 
     dispatcher.register("get_event", _get_event_handler)
+    dispatcher.register("evaluate_rules", _make_evaluate_rules(store, rules_dir))
+    dispatcher.register("query_findings", _make_query_findings(store))
     dispatcher.register(
         "query_program_execution_composite",
         _make_query_program_execution_composite(store),

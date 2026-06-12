@@ -1,0 +1,8 @@
+[
+  {
+    "event_id": "p1",
+    "event_type": "account_change",
+    "source_artifact": "evtx.security",
+    "evidence": { "event_id": 4720, "TargetUserName": "backdoor" }
+  }
+]

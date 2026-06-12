@@ -1,0 +1,8 @@
+[
+  {
+    "event_id": "p1",
+    "event_type": "scheduled_task",
+    "source_artifact": "evtx.microsoft_windows_taskscheduler_operational",
+    "evidence": { "event_id": 106, "TaskName": "\\Foo\\Bar" }
+  }
+]

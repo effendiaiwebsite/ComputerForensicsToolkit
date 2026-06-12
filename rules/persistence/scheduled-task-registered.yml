@@ -1,0 +1,18 @@
+id: persistence-scheduled-task-registered-001
+title: Scheduled task registered (TaskScheduler EventID 106)
+description: |
+  TaskScheduler EventID 106 fires whenever a new scheduled task is created.
+  Most are benign (Windows Update, vendor installers), so this is a low
+  signal on its own — the value is correlation: a 106 close in time to a
+  suspicious program_execution or a service installation is much stronger.
+severity: low
+mitre:
+  techniques: [T1053.005]
+  tactics: [persistence, execution, privilege_escalation]
+references:
+  - https://attack.mitre.org/techniques/T1053/005/
+
+match:
+  source_artifact: evtx.microsoft_windows_taskscheduler_operational
+  event_type: scheduled_task
+  evidence.event_id: 106

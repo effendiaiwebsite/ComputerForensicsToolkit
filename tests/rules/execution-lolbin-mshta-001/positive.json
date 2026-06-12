@@ -1,0 +1,23 @@
+[
+  {
+    "event_id": "p1",
+    "event_type": "program_execution",
+    "source_artifact": "prefetch",
+    "evidence": {
+      "executable_filename": "MSHTA.EXE",
+      "program_path": "C:\\Windows\\System32\\mshta.exe"
+    }
+  },
+  {
+    "event_id": "p2",
+    "event_type": "program_execution",
+    "source_artifact": "registry.amcache",
+    "evidence": { "program_path": "C:\\Windows\\System32\\mshta.exe" }
+  },
+  {
+    "event_id": "p3",
+    "event_type": "program_execution",
+    "source_artifact": "registry.ntuser",
+    "evidence": { "program_name": "C:\\Windows\\System32\\mshta.exe" }
+  }
+]

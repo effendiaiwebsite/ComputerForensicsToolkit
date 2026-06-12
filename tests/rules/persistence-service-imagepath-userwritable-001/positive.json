@@ -1,0 +1,21 @@
+[
+  {
+    "event_id": "p1",
+    "event_type": "service_install",
+    "source_artifact": "registry.system",
+    "evidence": {
+      "service_name": "evilSvc",
+      "image_path": "C:\\Users\\alice\\AppData\\Local\\Temp\\runner.exe"
+    }
+  },
+  {
+    "event_id": "p2",
+    "event_type": "service_install",
+    "source_artifact": "evtx.system",
+    "evidence": {
+      "ServiceName": "BadSvc",
+      "ImagePath": "C:\\ProgramData\\Temp\\loader.exe",
+      "event_id": 7045
+    }
+  }
+]

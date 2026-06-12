@@ -90,6 +90,28 @@ async fn get_event(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn evaluate_rules(
+    sidecar: State<'_, Sidecar>,
+    collection_id: String,
+) -> Result<Value, String> {
+    sidecar
+        .request("evaluate_rules", json!({ "collection_id": collection_id }))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn query_findings(
+    sidecar: State<'_, Sidecar>,
+    args: Value,
+) -> Result<Value, String> {
+    sidecar
+        .request("query_findings", args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -114,6 +136,8 @@ pub fn run() {
             query_program_execution_composite,
             query_timeline,
             get_event,
+            evaluate_rules,
+            query_findings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

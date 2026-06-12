@@ -1,0 +1,19 @@
+id: execution-temp-binary-001
+title: Program executed from %Temp% or %AppData%
+description: |
+  Any program execution evidence (Prefetch, AmCache, ShimCache, UserAssist)
+  pointing at a binary inside %Temp%, %AppData%, %Downloads%, %Public%, or
+  %ProgramData%\Temp is suspect. These directories are user-writable and
+  commonly used as drop locations by phishing payloads, drive-bys, and
+  living-off-the-land loaders.
+severity: high
+mitre:
+  techniques: [T1204.002]
+  tactics: [execution]
+references:
+  - https://attack.mitre.org/techniques/T1204/002/
+
+match:
+  event_type: program_execution
+  evidence.program_path:
+    regex: '(?i)\\(AppData|Local\\Temp|Roaming|Downloads|Users\\Public|ProgramData\\Temp|Windows\\Temp)\\'

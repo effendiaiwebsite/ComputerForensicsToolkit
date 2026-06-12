@@ -1,0 +1,21 @@
+id: persistence-psexec-service-name-001
+title: PSExec-style service installed (PSEXESVC)
+description: |
+  PsExec creates a service called PSEXESVC on the target host when it runs
+  remote commands. Outside of legitimate admin tooling, this often indicates
+  lateral movement by an adversary using Sysinternals binaries (or one of
+  the many PsExec clones).
+severity: high
+mitre:
+  techniques: [T1569.002]
+  tactics: [execution, lateral_movement]
+references:
+  - https://attack.mitre.org/techniques/T1569/002/
+
+match:
+  event_type: service_install
+  any_of:
+    - evidence.service_name:
+        regex: '(?i)^(PSEXESVC|PAExec|RemCom|csexec)'
+    - evidence.ServiceName:
+        regex: '(?i)^(PSEXESVC|PAExec|RemCom|csexec)'

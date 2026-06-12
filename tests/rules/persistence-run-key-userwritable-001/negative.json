@@ -1,0 +1,28 @@
+[
+  {
+    "event_id": "n1",
+    "event_type": "persistence_entry",
+    "source_artifact": "registry.ntuser",
+    "evidence": {
+      "value_name": "OneDrive",
+      "value_data": "C:\\Program Files\\Microsoft OneDrive\\OneDrive.exe"
+    }
+  },
+  {
+    "event_id": "n2",
+    "event_type": "persistence_entry",
+    "source_artifact": "registry.software",
+    "evidence": {
+      "value_name": "SecurityHealth",
+      "value_data": "C:\\Windows\\System32\\SecurityHealthSystray.exe"
+    }
+  },
+  {
+    "event_id": "n3",
+    "event_type": "program_execution",
+    "source_artifact": "registry.ntuser",
+    "evidence": {
+      "program_path": "C:\\Users\\alice\\AppData\\Roaming\\foo.exe"
+    }
+  }
+]

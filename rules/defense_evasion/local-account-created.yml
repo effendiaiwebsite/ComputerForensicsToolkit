@@ -1,0 +1,18 @@
+id: defense_evasion-local-account-created-001
+title: Local user account created (Security EventID 4720)
+description: |
+  EventID 4720 records the creation of a local Windows account. In a managed
+  environment, creating local accounts on endpoints is unusual and is a
+  common attacker technique for establishing a backdoor (T1136.001). On
+  domain controllers and standalone workstations it is more routine, so
+  rated medium pending context.
+severity: medium
+mitre:
+  techniques: [T1136.001]
+  tactics: [persistence]
+references:
+  - https://attack.mitre.org/techniques/T1136/001/
+
+match:
+  source_artifact: evtx.security
+  evidence.event_id: 4720

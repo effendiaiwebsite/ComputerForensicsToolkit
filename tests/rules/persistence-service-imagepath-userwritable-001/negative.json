@@ -1,0 +1,29 @@
+[
+  {
+    "event_id": "n1",
+    "event_type": "service_install",
+    "source_artifact": "registry.system",
+    "evidence": {
+      "service_name": "wuauserv",
+      "image_path": "C:\\Windows\\System32\\svchost.exe -k netsvcs"
+    }
+  },
+  {
+    "event_id": "n2",
+    "event_type": "service_install",
+    "source_artifact": "evtx.system",
+    "evidence": {
+      "ServiceName": "Defender",
+      "ImagePath": "C:\\ProgramData\\Microsoft\\Windows Defender\\Platform\\MsMpEng.exe",
+      "event_id": 7045
+    }
+  },
+  {
+    "event_id": "n3",
+    "event_type": "persistence_entry",
+    "source_artifact": "registry.system",
+    "evidence": {
+      "image_path": "C:\\Users\\alice\\AppData\\Roaming\\x.exe"
+    }
+  }
+]

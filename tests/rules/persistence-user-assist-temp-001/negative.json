@@ -1,0 +1,14 @@
+[
+  {
+    "event_id": "n1",
+    "event_type": "program_execution",
+    "source_artifact": "registry.ntuser",
+    "evidence": { "program_name": "C:\\Program Files\\Microsoft Office\\WINWORD.EXE" }
+  },
+  {
+    "event_id": "n2",
+    "event_type": "program_execution",
+    "source_artifact": "prefetch",
+    "evidence": { "program_path": "C:\\Users\\alice\\AppData\\Roaming\\stub.exe" }
+  }
+]

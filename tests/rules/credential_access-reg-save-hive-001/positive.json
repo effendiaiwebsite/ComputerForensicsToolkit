@@ -1,0 +1,17 @@
+[
+  {
+    "event_id": "p1",
+    "event_type": "shell_command",
+    "source_artifact": "registry.ntuser",
+    "evidence": { "command": "reg save HKLM\\SAM C:\\Users\\Public\\sam.hve" }
+  },
+  {
+    "event_id": "p2",
+    "event_type": "shell_command",
+    "source_artifact": "evtx.microsoft_windows_powershell_operational",
+    "evidence": {
+      "event_id": 4104,
+      "ScriptBlockText": "Invoke-Expression 'reg save HKLM\\SYSTEM C:\\tmp\\sys.hive'"
+    }
+  }
+]

@@ -1,0 +1,14 @@
+[
+  {
+    "event_id": "n1",
+    "event_type": "service_install",
+    "source_artifact": "registry.system",
+    "evidence": { "service_name": "wuauserv" }
+  },
+  {
+    "event_id": "n2",
+    "event_type": "service_install",
+    "source_artifact": "evtx.system",
+    "evidence": { "ServiceName": "Spooler", "event_id": 7045 }
+  }
+]

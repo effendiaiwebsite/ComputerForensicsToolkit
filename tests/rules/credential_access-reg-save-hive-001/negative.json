@@ -1,0 +1,14 @@
+[
+  {
+    "event_id": "n1",
+    "event_type": "shell_command",
+    "source_artifact": "registry.ntuser",
+    "evidence": { "command": "ipconfig /all" }
+  },
+  {
+    "event_id": "n2",
+    "event_type": "shell_command",
+    "source_artifact": "evtx.microsoft_windows_powershell_operational",
+    "evidence": { "event_id": 4104, "ScriptBlockText": "Get-ChildItem C:\\" }
+  }
+]

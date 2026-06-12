@@ -1,0 +1,14 @@
+[
+  {
+    "event_id": "p1",
+    "event_type": "program_execution",
+    "source_artifact": "registry.ntuser",
+    "evidence": { "program_name": "C:\\Users\\alice\\AppData\\Roaming\\stub.exe", "run_counter": 3 }
+  },
+  {
+    "event_id": "p2",
+    "event_type": "program_execution",
+    "source_artifact": "registry.ntuser",
+    "evidence": { "program_name": "C:\\Users\\bob\\Downloads\\invoice.exe", "run_counter": 1 }
+  }
+]

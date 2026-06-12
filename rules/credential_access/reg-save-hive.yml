@@ -1,0 +1,21 @@
+id: credential_access-reg-save-hive-001
+title: reg.exe save invoked on a registry hive (SAM/SYSTEM/SECURITY)
+description: |
+  `reg save HKLM\SAM …` is the textbook way to grab the SAM hive offline
+  for credential extraction (T1003.002). Seeing it in RunMRU, a PowerShell
+  script block, or a Win+R command history strongly suggests credential
+  harvesting prep.
+severity: critical
+mitre:
+  techniques: [T1003.002, T1003.004]
+  tactics: [credential_access]
+references:
+  - https://attack.mitre.org/techniques/T1003/002/
+
+match:
+  event_type: shell_command
+  any_of:
+    - evidence.command:
+        regex: '(?i)reg(\.exe)?\s+save\s+.*(SAM|SYSTEM|SECURITY)'
+    - evidence.ScriptBlockText:
+        regex: '(?i)reg(\.exe)?\s+save\s+.*(SAM|SYSTEM|SECURITY)'

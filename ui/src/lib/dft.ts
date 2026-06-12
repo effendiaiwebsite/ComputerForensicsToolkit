@@ -171,3 +171,50 @@ export type GetEventResult = {
 export async function getEvent(eventId: string): Promise<GetEventResult> {
   return invoke<GetEventResult>("get_event", { eventId });
 }
+
+export type Finding = {
+  finding_id: string;
+  rule_id: string;
+  rule_title: string;
+  severity: "low" | "medium" | "high" | "critical";
+  mitre_techniques: string[];
+  mitre_tactics: string[];
+  evidence_event_ids: string[];
+  collection_id: string;
+  created_at: string;
+  summary: string;
+  examiner_status: string;
+};
+
+export type EvaluateRulesResult = {
+  ok: boolean;
+  collection_id: string;
+  rules_loaded: number;
+  findings_count: number;
+  by_severity: Record<string, number>;
+  by_rule: Record<string, number>;
+  error?: string;
+};
+
+export type QueryFindingsResult = {
+  ok: boolean;
+  findings: Finding[];
+  total: number;
+  by_severity: Record<string, number>;
+  error?: string;
+};
+
+export async function evaluateRules(collectionId: string): Promise<EvaluateRulesResult> {
+  return invoke<EvaluateRulesResult>("evaluate_rules", { collectionId });
+}
+
+export async function queryFindings(args: {
+  collection_id?: string;
+  severities?: string[];
+  tactic?: string;
+  examiner_status?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<QueryFindingsResult> {
+  return invoke<QueryFindingsResult>("query_findings", { args });
+}

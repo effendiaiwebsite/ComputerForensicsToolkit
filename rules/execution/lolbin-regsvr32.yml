@@ -1,0 +1,24 @@
+id: execution-lolbin-regsvr32-001
+title: LOLBin execution — regsvr32.exe
+description: |
+  regsvr32.exe is abused for Squiblydoo-style script execution: register a
+  remote .sct file via `/i:http://...scrobj.dll` to bypass application
+  control. Like rundll32 it has plenty of benign daily use, so this is
+  low severity by itself.
+severity: low
+mitre:
+  techniques: [T1218.010]
+  tactics: [defense_evasion, execution]
+references:
+  - https://attack.mitre.org/techniques/T1218/010/
+  - https://lolbas-project.github.io/lolbas/Binaries/Regsvr32/
+
+match:
+  event_type: program_execution
+  any_of:
+    - evidence.program_path:
+        regex: '(?i)\\regsvr32\.exe$'
+    - evidence.executable_filename:
+        regex: '(?i)^REGSVR32\.EXE$'
+    - evidence.program_name:
+        regex: '(?i)\\regsvr32\.exe'

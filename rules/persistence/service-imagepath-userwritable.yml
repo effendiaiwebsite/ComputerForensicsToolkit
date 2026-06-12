@@ -1,0 +1,23 @@
+id: persistence-service-imagepath-userwritable-001
+title: Service installed with ImagePath in a user-writable location
+description: |
+  Windows services normally point to binaries under C:\Windows\System32 or
+  C:\Program Files. A service ImagePath in %AppData%, %Temp%, %ProgramData%
+  or %Public% suggests an adversary using the Service Control Manager for
+  persistence — covered by ATT&CK T1543.003.
+severity: high
+mitre:
+  techniques: [T1543.003]
+  tactics: [persistence, privilege_escalation]
+references:
+  - https://attack.mitre.org/techniques/T1543/003/
+author: dft
+date: 2026-06-12
+
+match:
+  event_type: service_install
+  any_of:
+    - evidence.image_path:
+        regex: '(?i)\\(AppData|Local\\Temp|Roaming|ProgramData\\Temp|Users\\Public|Windows\\Temp)\\'
+    - evidence.ImagePath:
+        regex: '(?i)\\(AppData|Local\\Temp|Roaming|ProgramData\\Temp|Users\\Public|Windows\\Temp)\\'
