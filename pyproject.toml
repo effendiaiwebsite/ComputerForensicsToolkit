@@ -3,7 +3,9 @@ name = "dft-core"
 version = "0.1.0"
 description = "Digital Forensics Triage Toolkit — parsing core and sidecar"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "regipy>=5.0.0",
+]
 
 [project.optional-dependencies]
 dev = [
