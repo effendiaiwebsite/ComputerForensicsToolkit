@@ -7,16 +7,19 @@ import {
   type ColumnDef,
   type SortingState,
 } from "@tanstack/react-table";
-import { Activity, ArrowDown, ArrowUp, FileText, FolderOpen, FolderTree, Globe, Layers, ShieldAlert, Table2, Usb, X } from "lucide-react";
+import { Activity, AlertTriangle, ArrowDown, ArrowUp, FileText, FolderOpen, FolderTree, Globe, HardDrive, Layers, ShieldAlert, Table2, Usb, X } from "lucide-react";
 
 import { DetailPane } from "@/components/DetailPane";
 import { Timeline } from "@/components/Timeline";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+  enumerateDrives,
   evaluateRules,
   generateReport,
   getEvent,
+  getProgress,
+  isElevated,
   pingSidecar,
   queryBrowserDomains,
   queryEvents,
@@ -24,12 +27,15 @@ import {
   queryProgramExecutionComposite,
   queryTimeline,
   queryUsbDevices,
+  runLiveCollection,
   runTriageDirectory,
   runTriageHive,
   type BrowserDomain,
   type ExecutionCompositeRow,
   type Finding,
   type ForensicEvent,
+  type PhysicalDrive,
+  type ProgressSnapshot,
   type SidecarPong,
   type TimelinePoint,
   type UsbDevice,
@@ -206,6 +212,9 @@ export default function App() {
   const [usbDevices, setUsbDevices] = useState<UsbDevice[]>([]);
   const [browserDomains, setBrowserDomains] = useState<BrowserDomain[]>([]);
   const [reportOpen, setReportOpen] = useState(false);
+  const [elevated, setElevated] = useState<boolean | null>(null);
+  const [liveOpen, setLiveOpen] = useState(false);
+  const [liveProgress, setLiveProgress] = useState<ProgressSnapshot | null>(null);
 
   useEffect(() => {
     pingSidecar()
@@ -217,7 +226,49 @@ export default function App() {
       .catch((err) =>
         setSidecar({ kind: "error", message: err instanceof Error ? err.message : String(err) }),
       );
+    isElevated().then(setElevated).catch(() => setElevated(false));
   }, []);
+
+  useEffect(() => {
+    if (!liveProgress || liveProgress.phase !== "running") return;
+    const id = liveProgress.collection_id;
+    const handle = window.setInterval(async () => {
+      try {
+        const r = await getProgress(id);
+        if (r.ok && r.progress) setLiveProgress(r.progress);
+      } catch {
+        // transient errors — keep polling
+      }
+    }, 500);
+    return () => window.clearInterval(handle);
+  }, [liveProgress?.collection_id, liveProgress?.phase]);
+
+  // When a live collection finishes, switch the active view to it so the
+  // examiner sees the just-collected events without a manual reload.
+  useEffect(() => {
+    if (!liveProgress || liveProgress.phase !== "done") return;
+    const cid = liveProgress.collection_id;
+    (async () => {
+      try {
+        const res = await queryEvents({ collection_id: cid, limit: 1 });
+        if (!res.ok) return;
+        setCollection({
+          collection_id: cid,
+          host_id: "—",
+          label: liveProgress.label,
+          event_count: res.total,
+          by_event_type: res.by_event_type,
+          by_source_artifact: res.by_source_artifact,
+        });
+        setSelected(null);
+        setActiveTypes(new Set());
+        setActiveSeverity(new Set());
+        setView("events");
+      } catch (err) {
+        console.warn("auto-load after live collection failed", err);
+      }
+    })();
+  }, [liveProgress?.collection_id, liveProgress?.phase]);
 
   useEffect(() => {
     const id = setTimeout(() => setDebouncedFilter(filter), 250);
@@ -604,8 +655,41 @@ export default function App() {
             <FileText className="h-4 w-4" />
             Generate report…
           </Button>
+          <Button
+            onClick={() => setLiveOpen(true)}
+            disabled={
+              sidecar.kind === "running" || !elevated || liveProgress?.phase === "running"
+            }
+            size="sm"
+            title={
+              elevated === false
+                ? "Live disk collection requires administrator privileges — relaunch as admin."
+                : "Collect artifacts from a live physical drive or disk image"
+            }
+          >
+            <HardDrive className="h-4 w-4" />
+            Collect live…
+          </Button>
         </div>
       </header>
+
+      {elevated === false && (
+        <div className="flex items-center gap-2 border-b border-warning/40 bg-warning/10 px-4 py-1.5 font-mono text-xs text-warning">
+          <AlertTriangle className="h-3.5 w-3.5" />
+          <span>
+            Running without administrator privileges. Hive / directory triage works; live disk
+            collection is disabled. Relaunch as administrator to enable{" "}
+            <span className="font-semibold">Collect live…</span>.
+          </span>
+        </div>
+      )}
+
+      {liveProgress && (
+        <LiveProgressBar
+          snap={liveProgress}
+          onDismiss={() => setLiveProgress(null)}
+        />
+      )}
 
       {reportOpen && collection && (
         <ReportModal
@@ -614,6 +698,17 @@ export default function App() {
           onGenerated={(path) =>
             setSidecar({ kind: "ok", info: { ok: true, sidecar_version: `saved: ${path}` } })
           }
+          onError={(message) => setSidecar({ kind: "error", message })}
+        />
+      )}
+
+      {liveOpen && (
+        <LiveCollectModal
+          onClose={() => setLiveOpen(false)}
+          onStart={(snap) => {
+            setLiveProgress(snap);
+            setLiveOpen(false);
+          }}
           onError={(message) => setSidecar({ kind: "error", message })}
         />
       )}
@@ -1160,6 +1255,250 @@ function BrowserTable({
         ))}
       </tbody>
     </table>
+  );
+}
+
+function LiveCollectModal({
+  onClose,
+  onStart,
+  onError,
+}: {
+  onClose: () => void;
+  onStart: (snap: ProgressSnapshot) => void;
+  onError: (message: string) => void;
+}) {
+  const [drives, setDrives] = useState<PhysicalDrive[] | null>(null);
+  const [mode, setMode] = useState<"live" | "image">("live");
+  const [imagePath, setImagePath] = useState("");
+  const [destDir, setDestDir] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    enumerateDrives()
+      .then((r) => setDrives(r.ok ? r.drives : []))
+      .catch(() => setDrives([]));
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    setDestDir(`collected/${ts}`);
+  }, []);
+
+  async function browseImage() {
+    try {
+      const sel = await openDialog({
+        multiple: false,
+        directory: false,
+        title: "Pick a disk image (E01 / raw)",
+      });
+      if (typeof sel === "string") {
+        setImagePath(sel);
+        setMode("image");
+      }
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function browseDestDir() {
+    try {
+      const sel = await openDialog({
+        multiple: false,
+        directory: true,
+        title: "Pick destination folder for collected artifacts",
+      });
+      if (typeof sel === "string") setDestDir(sel);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function submit() {
+    if (busy) return;
+    const source = mode === "live" ? "local" : imagePath;
+    if (!source) {
+      onError(mode === "image" ? "pick a disk image" : "no live source available");
+      return;
+    }
+    if (!destDir) {
+      onError("pick a destination folder");
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await runLiveCollection({ source, dest_dir: destDir });
+      if (!res.ok) {
+        onError(res.error ?? "live collection failed to start");
+        return;
+      }
+      onStart({
+        collection_id: res.collection_id,
+        phase: "running",
+        label: `live collection from ${res.source}`,
+        current_item: "starting…",
+        completed: 0,
+        total: 0,
+        started_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        finished_at: null,
+        error: null,
+        by_category: {},
+      });
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="w-[560px] rounded-md border border-border bg-card p-4 font-mono text-xs shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-3 flex items-center justify-between">
+          <div className="text-sm font-semibold">Live disk collection</div>
+          <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close">
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+
+        <div className="mb-3">
+          <div className="mb-1 text-muted-foreground">Source</div>
+          <label
+            className={cn(
+              "mb-1 flex cursor-pointer items-start gap-2 rounded border border-border p-2 hover:bg-muted/40",
+              mode === "live" ? "bg-accent/20" : "",
+            )}
+          >
+            <input
+              type="radio"
+              name="src-mode"
+              checked={mode === "live"}
+              onChange={() => setMode("live")}
+              className="mt-0.5"
+            />
+            <div className="min-w-0 flex-1">
+              <div className="text-foreground">Live local system (all mounted volumes)</div>
+              <div className="text-muted-foreground">
+                Reads via dissect.target's local loader — requires administrator.
+              </div>
+              {drives && drives.length > 0 && (
+                <ul className="mt-1 space-y-0.5 text-muted-foreground">
+                  {drives.map((d) => (
+                    <li key={d.device}>
+                      <span className="text-foreground">{d.device}</span>
+                      <span> · {d.model}</span>
+                      <span> · {(d.size_bytes / 1_000_000_000).toFixed(0)} GB</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </label>
+
+          <label
+            className={cn(
+              "flex cursor-pointer items-start gap-2 rounded border border-border p-2 hover:bg-muted/40",
+              mode === "image" ? "bg-accent/20" : "",
+            )}
+          >
+            <input
+              type="radio"
+              name="src-mode"
+              checked={mode === "image"}
+              onChange={() => setMode("image")}
+              className="mt-0.5"
+            />
+            <div className="min-w-0 flex-1">
+              <div className="text-foreground">Disk image (E01 / raw)</div>
+              <div className="mt-1 flex items-center gap-2">
+                <Input
+                  placeholder="path to .E01 / .img / .dd"
+                  value={imagePath}
+                  onChange={(e) => setImagePath(e.target.value)}
+                  className="flex-1"
+                  onFocus={() => setMode("image")}
+                />
+                <Button variant="secondary" size="sm" onClick={browseImage}>
+                  Browse…
+                </Button>
+              </div>
+            </div>
+          </label>
+        </div>
+
+        <div className="mb-3">
+          <div className="mb-1 text-muted-foreground">Destination folder</div>
+          <div className="flex items-center gap-2">
+            <Input
+              value={destDir}
+              onChange={(e) => setDestDir(e.target.value)}
+              className="flex-1"
+            />
+            <Button variant="secondary" size="sm" onClick={browseDestDir}>
+              Browse…
+            </Button>
+          </div>
+          <div className="mt-1 text-muted-foreground">
+            Each collected file is SHA-256 hashed; audit.jsonl is written alongside.
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button size="sm" onClick={submit} disabled={busy}>
+            {busy ? "Starting…" : "Start collection"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LiveProgressBar({
+  snap,
+  onDismiss,
+}: {
+  snap: ProgressSnapshot;
+  onDismiss: () => void;
+}) {
+  const pct = snap.total > 0 ? Math.min(100, Math.round((snap.completed / snap.total) * 100)) : 0;
+  const tone =
+    snap.phase === "error" ? "border-error/40 bg-error/10 text-error"
+    : snap.phase === "done" ? "border-accent/40 bg-accent/10 text-accent"
+    : "border-accent/40 bg-accent/10 text-foreground";
+  return (
+    <div className={cn("border-b px-4 py-2 font-mono text-xs", tone)}>
+      <div className="mb-1 flex items-center gap-3">
+        <HardDrive className="h-3.5 w-3.5" />
+        <span className="font-semibold">{snap.label}</span>
+        <span className="text-muted-foreground">
+          {snap.completed.toLocaleString()} / {snap.total > 0 ? snap.total.toLocaleString() : "?"}
+        </span>
+        <span className="ml-auto text-muted-foreground">{snap.phase}</span>
+        {(snap.phase === "done" || snap.phase === "error") && (
+          <Button variant="ghost" size="icon" onClick={onDismiss} aria-label="Dismiss">
+            <X className="h-3 w-3" />
+          </Button>
+        )}
+      </div>
+      <div className="h-1 w-full overflow-hidden rounded bg-muted/40">
+        <div
+          className={cn(
+            "h-full transition-all duration-300",
+            snap.phase === "error" ? "bg-error" : "bg-accent",
+          )}
+          style={{ width: snap.phase === "done" ? "100%" : `${pct}%` }}
+        />
+      </div>
+      <div className="mt-1 truncate text-muted-foreground" title={snap.current_item}>
+        {snap.error ? snap.error : snap.current_item || "—"}
+      </div>
+    </div>
   );
 }
 

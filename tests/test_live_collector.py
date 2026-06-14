@@ -1,0 +1,284 @@
+"""Tests for the live disk collector using a fake dissect target.
+
+We don't drive real ``dissect.target`` here — that would need admin or a
+sample image. Instead we build a minimal ``FakeTarget`` exposing the same
+attribute surface the collector actually touches (``target.fs.path`` and
+``target.user_details.all``). This keeps the collector's contract honest:
+if it grows to assume new attributes, the test must grow with it.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterator
+
+import pytest
+
+from collectors.windows.live_disk import NoWindowsVolumeError, collect_live
+from core.audit import AuditLog
+from core.progress import ProgressTracker
+
+
+@dataclass
+class FakeFile:
+    """One file in the fake target's tree."""
+    rel_path: str
+    payload: bytes
+
+
+class FakePath:
+    def __init__(self, root: Path, rel: str) -> None:
+        self._root = root
+        self._rel = rel.lstrip("/")
+        self._concrete = (root / self._rel).resolve()
+
+    @property
+    def name(self) -> str:
+        return self._concrete.name
+
+    def exists(self) -> bool:
+        return self._concrete.exists()
+
+    def is_file(self) -> bool:
+        return self._concrete.is_file()
+
+    def is_dir(self) -> bool:
+        return self._concrete.is_dir()
+
+    def open(self, mode: str = "rb"):
+        return self._concrete.open(mode)
+
+    def iterdir(self) -> Iterator["FakePath"]:
+        for child in self._concrete.iterdir():
+            yield FakePath(self._root, str(child.relative_to(self._root)).replace("\\", "/"))
+
+    def rglob(self, pattern: str) -> Iterator["FakePath"]:
+        for child in self._concrete.rglob(pattern):
+            yield FakePath(self._root, str(child.relative_to(self._root)).replace("\\", "/"))
+
+    def relative_to(self, other: "FakePath") -> Path:
+        return self._concrete.relative_to(other._concrete)
+
+    def __str__(self) -> str:
+        return "/" + self._rel
+
+    def __repr__(self) -> str:
+        return f"FakePath({self._rel!r})"
+
+
+class FakeFS:
+    def __init__(self, root: Path) -> None:
+        self._root = root
+
+    def path(self, p: str) -> FakePath:
+        return FakePath(self._root, p)
+
+
+@dataclass
+class FakeUser:
+    name: str
+    home: str
+
+
+class FakeUserDetails:
+    """Wraps a list of users so collector.user_details.all() works."""
+    def __init__(self, users: list[FakeUser]):
+        self._users = users
+
+    def all(self) -> Iterator[dict]:
+        for u in self._users:
+            yield {"user": u, "home_path": u.home, "name": u.name}
+
+
+class FakeTarget:
+    def __init__(self, fs_root: Path, users: list[FakeUser]):
+        self.fs = FakeFS(fs_root)
+        # user_details emits objects with .user.name and .home_path — but our
+        # collector falls back to dict-style access too, so a list of dicts works.
+        self._users = users
+
+    @property
+    def user_details(self):
+        target = self
+
+        class _Wrap:
+            @staticmethod
+            def all():
+                for u in target._users:
+                    yield type("UD", (), {"user": u, "home_path": u.home, "name": u.name})()
+        return _Wrap()
+
+
+def _materialize(root: Path, files: list[FakeFile]) -> None:
+    for f in files:
+        p = root / f.rel_path.lstrip("/")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(f.payload)
+
+
+def test_collect_copies_hashes_and_audits(tmp_path: Path) -> None:
+    src_root = tmp_path / "src"
+    dest_root = tmp_path / "dest"
+    src_root.mkdir()
+    dest_root.mkdir()
+
+    _materialize(src_root, [
+        FakeFile("Windows/System32/config/SYSTEM",   b"SYSTEM_HIVE_BYTES" * 128),
+        FakeFile("Windows/System32/config/SOFTWARE", b"SOFTWARE_HIVE"),
+        FakeFile("Windows/Prefetch/CHROME.EXE-A1B2C3D4.pf", b"prefetch-bytes"),
+        FakeFile("Windows/Prefetch/CMD.EXE-FFEEDDCC.pf",    b"another-pf"),
+        FakeFile("Windows/System32/winevt/Logs/Security.evtx", b"evtx-bytes"),
+        FakeFile("Users/alice/NTUSER.DAT", b"alice-ntuser"),
+        FakeFile(
+            "Users/alice/AppData/Local/Google/Chrome/User Data/Default/History",
+            b"chrome-history-bytes",
+        ),
+    ])
+
+    audit = AuditLog(dest_root / "audit.jsonl")
+    progress = ProgressTracker()
+    progress.start("c1", label="test", total=0)
+
+    target = FakeTarget(src_root, [FakeUser(name="alice", home="/Users/alice")])
+    result = collect_live(
+        target,
+        collection_id="c1",
+        dest_dir=dest_root,
+        audit=audit,
+        progress=progress,
+        source_label="fake://test",
+    )
+
+    # All seven seeded files should land in the dest tree under mirrored paths.
+    expected = [
+        "Windows/System32/config/SYSTEM",
+        "Windows/System32/config/SOFTWARE",
+        "Windows/Prefetch/CHROME.EXE-A1B2C3D4.pf",
+        "Windows/Prefetch/CMD.EXE-FFEEDDCC.pf",
+        "Windows/System32/winevt/Logs/Security.evtx",
+        "Users/alice/NTUSER.DAT",
+        "Users/alice/AppData/Local/Google/Chrome/User Data/Default/History",
+    ]
+    for rel in expected:
+        copied = dest_root / rel
+        assert copied.exists(), f"missing in dest: {rel}"
+
+    # SHA-256 in the audit log matches the actual file bytes.
+    records = audit.read_all()
+    ok_records = [r for r in records if r["status"] == "ok"]
+    assert len(ok_records) == len(expected)
+    for rec in ok_records:
+        dest_bytes = (dest_root / rec["dest_path"]).read_bytes()
+        assert hashlib.sha256(dest_bytes).hexdigest() == rec["sha256"]
+        assert rec["size_bytes"] == len(dest_bytes)
+
+    assert result.files_collected == len(expected)
+    assert result.errors == 0
+    snap = progress.get("c1")
+    # Progress.completed counts every attempted spec — copies + skips — so it
+    # equals snap.total once the run finishes.
+    assert snap.completed == snap.total
+    assert snap.by_category["registry"] >= 3
+
+
+def test_missing_artifacts_are_skipped_not_failed(tmp_path: Path) -> None:
+    src_root = tmp_path / "src"
+    dest_root = tmp_path / "dest"
+    src_root.mkdir()
+    dest_root.mkdir()
+    # Only one system file present — the rest of the spec list should be cleanly
+    # skipped, BUT at least one of the five system hives must land so we don't
+    # trip the no-Windows-volume early-exit.
+    _materialize(src_root, [
+        FakeFile("Windows/System32/config/SYSTEM", b"only-system"),
+    ])
+
+    audit = AuditLog(dest_root / "audit.jsonl")
+    progress = ProgressTracker()
+    progress.start("c", label="t", total=0)
+
+    target = FakeTarget(src_root, [])  # no users either
+    result = collect_live(
+        target,
+        collection_id="c",
+        dest_dir=dest_root,
+        audit=audit,
+        progress=progress,
+        source_label="fake://empty",
+    )
+    assert result.files_collected == 1
+    assert result.errors == 0
+    records = audit.read_all()
+    skipped = [r for r in records if r["status"] == "skipped"]
+    assert len(skipped) >= 3  # SOFTWARE, SAM, SECURITY all missing
+
+
+def test_no_windows_volume_raises_early(tmp_path: Path) -> None:
+    """If none of the 5 system hives land, abort instead of grinding the rest."""
+    src_root = tmp_path / "src"
+    dest_root = tmp_path / "dest"
+    src_root.mkdir()
+    dest_root.mkdir()
+    # Image contains a Linux-shaped tree, no /Windows at all.
+    _materialize(src_root, [
+        FakeFile("etc/passwd", b"root:x:0:0:root:/root:/bin/bash"),
+        FakeFile("home/alice/.bashrc", b"# noop"),
+    ])
+
+    audit = AuditLog(dest_root / "audit.jsonl")
+    progress = ProgressTracker()
+    progress.start("c", label="t", total=0)
+
+    target = FakeTarget(src_root, [])
+    with pytest.raises(NoWindowsVolumeError, match="canonical Windows system hives"):
+        collect_live(
+            target,
+            collection_id="c",
+            dest_dir=dest_root,
+            audit=audit,
+            progress=progress,
+            source_label="fake://linux",
+        )
+
+    # All 5 system hives recorded as skipped; nothing further attempted.
+    records = audit.read_all()
+    assert len(records) == 5
+    assert all(r["status"] == "skipped" for r in records)
+
+
+def test_enumerate_drives_non_windows_returns_empty(monkeypatch) -> None:
+    import collectors.windows.live_disk as ld
+
+    monkeypatch.setattr(ld.sys, "platform", "linux")
+    assert ld.enumerate_physical_drives() == []
+
+
+def test_open_target_translates_device_paths_to_local(monkeypatch) -> None:
+    """Regression: \\\\.\\PhysicalDriveN must go through dissect's LocalLoader.
+
+    If routed through Target.open() with the raw device path, the VBLoader
+    auto-detect calls path.joinpath('MFT_C.bin').exists() and trips
+    WinError 31 on Windows. Translating to 'local' bypasses the broken
+    auto-detect path entirely.
+    """
+    seen: list[str] = []
+
+    class _FakeTargetModule:
+        class Target:
+            @staticmethod
+            def open(source: str) -> str:
+                seen.append(source)
+                return f"target<{source}>"
+
+    monkeypatch.setitem(__import__("sys").modules, "dissect.target", _FakeTargetModule)
+
+    from collectors.windows.live_disk import open_target
+
+    open_target(r"\\.\PhysicalDrive0")
+    open_target(r"\\.\PhysicalDrive1")
+    open_target("local")
+    open_target(r"C:\images\evidence.E01")
+
+    assert seen == ["local", "local", "local", r"C:\images\evidence.E01"]

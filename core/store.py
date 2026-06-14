@@ -89,7 +89,12 @@ class EventStore:
     """Thin wrapper over sqlite3 with the queries the UI needs."""
 
     def __init__(self, path: str | Path = ":memory:") -> None:
-        self._conn = sqlite3.connect(str(path), isolation_level=None)
+        # check_same_thread=False lets the live-collection worker thread reuse
+        # this connection after the main thread spawned it; sqlite3 itself
+        # serializes statements internally with the GIL, and our access pattern
+        # is single-writer (worker) + occasional read (main stdio loop), so we
+        # don't need an explicit lock. WAL improves concurrent read tolerance.
+        self._conn = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")

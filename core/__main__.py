@@ -279,14 +279,19 @@ def _make_run_triage_directory(store: EventStore):
                 ),
             }
 
-        collection_id = _new_collection_id()
-        store.register_collection(
-            collection_id=collection_id,
-            host_id=host_id_hint,
-            host_os="windows",
-            created_at=_utc_now_iso(),
-            note=f"directory triage: {dir_path}",
-        )
+        # Allow callers (live collection worker) to pass an existing
+        # collection_id so all events land under one ID instead of a fresh
+        # one — keeps the UI's progress poller pointing at the right record.
+        provided_cid = request.get("collection_id")
+        collection_id = provided_cid if isinstance(provided_cid, str) and provided_cid else _new_collection_id()
+        if not provided_cid:
+            store.register_collection(
+                collection_id=collection_id,
+                host_id=host_id_hint,
+                host_os="windows",
+                created_at=_utc_now_iso(),
+                note=f"directory triage: {dir_path}",
+            )
 
         per_hive: list[dict[str, Any]] = []
         total = 0
@@ -727,13 +732,133 @@ def _make_query_findings(store: EventStore):
     return handler
 
 
+def _make_enumerate_drives():
+    def handler(_request: dict[str, Any]) -> dict[str, Any]:
+        from collectors.windows.live_disk import enumerate_physical_drives
+
+        drives = enumerate_physical_drives()
+        return {
+            "drives": [
+                {
+                    "device": d.device,
+                    "model": d.model,
+                    "size_bytes": d.size_bytes,
+                    "serial": d.serial,
+                }
+                for d in drives
+            ],
+        }
+
+    return handler
+
+
+def _make_get_progress(progress):
+    def handler(request: dict[str, Any]) -> dict[str, Any]:
+        cid = request.get("collection_id")
+        if not isinstance(cid, str) or not cid:
+            return {"ok": False, "error": "missing 'collection_id' string"}
+        snap = progress.get(cid)
+        if snap is None:
+            return {"ok": False, "error": "unknown collection_id"}
+        return {"progress": snap.to_dict()}
+
+    return handler
+
+
+def _make_run_live_collection(store: EventStore, progress, rules_dir: Path):
+    import threading
+    from pathlib import Path as _Path
+
+    def handler(request: dict[str, Any]) -> dict[str, Any]:
+        drive = request.get("source")
+        dest_dir = request.get("dest_dir")
+        if not isinstance(drive, str) or not drive:
+            return {"ok": False, "error": "missing 'source' (drive or image path)"}
+        if not isinstance(dest_dir, str) or not dest_dir:
+            return {"ok": False, "error": "missing 'dest_dir'"}
+
+        collection_id = _new_collection_id()
+        progress.start(
+            collection_id,
+            label=f"live collection from {drive}",
+            total=0,
+        )
+
+        def _worker() -> None:
+            from collectors.windows.live_disk import (
+                NoWindowsVolumeError,
+                collect_live,
+                open_target,
+            )
+            from core.audit import AuditLog
+
+            dest_root = _Path(dest_dir).resolve()
+            audit = AuditLog(dest_root / "audit.jsonl")
+            try:
+                target = open_target(drive)
+                collect_live(
+                    target,
+                    collection_id=collection_id,
+                    dest_dir=dest_root,
+                    audit=audit,
+                    progress=progress,
+                    source_label=drive,
+                )
+                # Auto-chain ingestion + rule eval so the UI lands on a live collection.
+                progress.update(collection_id, current_item="ingesting collected artifacts…")
+                store.register_collection(
+                    collection_id=collection_id,
+                    host_id=socket.gethostname(),
+                    host_os="windows",
+                    created_at=_utc_now_iso(),
+                    note=f"live: {drive} → {dest_root}",
+                )
+                # Reuse the existing directory-triage dispatcher so we don't duplicate logic.
+                # Pass our collection_id so all events land under the same ID the UI is polling.
+                tri = _make_run_triage_directory(store)({
+                    "dir_path": str(dest_root),
+                    "host_id_hint": socket.gethostname(),
+                    "collection_id": collection_id,
+                })
+                if tri.get("ok") is not False:
+                    eval_handler = _make_evaluate_rules(store, rules_dir)
+                    eval_handler({"collection_id": collection_id})
+                    progress.update(
+                        collection_id,
+                        current_item=f"done — ingested {tri.get('event_count', 0)} events",
+                    )
+                progress.finish(collection_id)
+            except NoWindowsVolumeError as exc:
+                audit.error("collect_live", drive, exc)
+                progress.finish(collection_id, error=str(exc))
+            except Exception as exc:
+                logger = logging.getLogger(__name__)
+                logger.exception("live collection failed")
+                audit.error("collect_live", drive, exc)
+                progress.finish(collection_id, error=f"{type(exc).__name__}: {exc}")
+
+        threading.Thread(target=_worker, name=f"live-{collection_id}", daemon=True).start()
+        return {
+            "collection_id": collection_id,
+            "source": drive,
+            "dest_dir": dest_dir,
+            "phase": "running",
+        }
+
+    return handler
+
+
 def build_dispatcher(
     store: EventStore | None = None,
     *,
     rules_dir: Path | None = None,
+    progress=None,
 ) -> Dispatcher:
+    from core.progress import ProgressTracker
+
     store = store or EventStore()
     rules_dir = rules_dir or _default_rules_dir()
+    progress = progress or ProgressTracker()
     dispatcher = Dispatcher()
     dispatcher.register("ping", _ping)
     dispatcher.register("run_triage_system_hive", _make_run_triage_system_hive(store))
@@ -761,6 +886,12 @@ def build_dispatcher(
     )
     dispatcher.register("query_browser_domains", _make_query_browser_domains(store))
     dispatcher.register("generate_report", _make_generate_report(store))
+    dispatcher.register("enumerate_drives", _make_enumerate_drives())
+    dispatcher.register("get_progress", _make_get_progress(progress))
+    dispatcher.register(
+        "run_live_collection",
+        _make_run_live_collection(store, progress, rules_dir),
+    )
     return dispatcher
 
 

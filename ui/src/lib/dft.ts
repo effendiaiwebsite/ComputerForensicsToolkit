@@ -232,6 +232,67 @@ export async function generateReport(args: {
   return invoke<GenerateReportResult>("generate_report", { args });
 }
 
+export type PhysicalDrive = {
+  device: string;
+  model: string;
+  size_bytes: number;
+  serial: string | null;
+};
+
+export type EnumerateDrivesResult = {
+  ok: boolean;
+  drives: PhysicalDrive[];
+  error?: string;
+};
+
+export type LiveCollectionStart = {
+  ok: boolean;
+  collection_id: string;
+  source: string;
+  dest_dir: string;
+  phase: string;
+  error?: string;
+};
+
+export type ProgressSnapshot = {
+  collection_id: string;
+  phase: "pending" | "running" | "done" | "error";
+  label: string;
+  current_item: string;
+  completed: number;
+  total: number;
+  started_at: string;
+  updated_at: string;
+  finished_at: string | null;
+  error: string | null;
+  by_category: Record<string, number>;
+};
+
+export type ProgressResult = {
+  ok: boolean;
+  progress?: ProgressSnapshot;
+  error?: string;
+};
+
+export async function isElevated(): Promise<boolean> {
+  return invoke<boolean>("is_elevated");
+}
+
+export async function enumerateDrives(): Promise<EnumerateDrivesResult> {
+  return invoke<EnumerateDrivesResult>("enumerate_drives");
+}
+
+export async function runLiveCollection(args: {
+  source: string;
+  dest_dir: string;
+}): Promise<LiveCollectionStart> {
+  return invoke<LiveCollectionStart>("run_live_collection", { args });
+}
+
+export async function getProgress(collectionId: string): Promise<ProgressResult> {
+  return invoke<ProgressResult>("get_progress", { collectionId });
+}
+
 export type GetEventResult = {
   ok: boolean;
   event?: ForensicEvent;

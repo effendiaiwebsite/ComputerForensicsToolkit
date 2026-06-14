@@ -1,3 +1,4 @@
+mod elevation;
 mod sidecar;
 
 use serde_json::{json, Value};
@@ -145,6 +146,41 @@ async fn generate_report(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn enumerate_drives(sidecar: State<'_, Sidecar>) -> Result<Value, String> {
+    sidecar
+        .request("enumerate_drives", Value::Null)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn run_live_collection(
+    sidecar: State<'_, Sidecar>,
+    args: Value,
+) -> Result<Value, String> {
+    sidecar
+        .request("run_live_collection", args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_progress(
+    sidecar: State<'_, Sidecar>,
+    collection_id: String,
+) -> Result<Value, String> {
+    sidecar
+        .request("get_progress", json!({ "collection_id": collection_id }))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn is_elevated() -> bool {
+    elevation::is_elevated()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -174,6 +210,10 @@ pub fn run() {
             query_usb_devices,
             query_browser_domains,
             generate_report,
+            enumerate_drives,
+            run_live_collection,
+            get_progress,
+            is_elevated,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

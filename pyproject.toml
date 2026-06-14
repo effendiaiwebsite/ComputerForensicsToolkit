@@ -9,6 +9,7 @@ dependencies = [
     "python-evtx>=0.8.0",
     "libscca-python>=20240000",
     "pyyaml>=6.0",
+    "dissect.target>=3.20",
 ]
 
 [project.optional-dependencies]
