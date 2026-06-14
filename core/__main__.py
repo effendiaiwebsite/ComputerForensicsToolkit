@@ -96,15 +96,43 @@ def _make_run_triage_hive(store: EventStore):
             return {"ok": False, "error": "missing 'hive_path' string"}
         kind_hint = request.get("kind")
         user_hint = request.get("user_hint")
+        browser_kind_hint = request.get("browser_kind")
         collection_id = request.get("collection_id")
         host_id_hint = request.get("host_id_hint") or socket.gethostname()
 
         new_collection = collection_id is None
         collection_id = collection_id or _new_collection_id()
 
-        # Same op handles registry hives, .evtx, .pf, .lnk, JumpLists.
+        # Same op handles registry hives, .evtx, .pf, .lnk, JumpLists, browser History.
         lower = hive_path.lower()
-        if lower.endswith(".evtx"):
+        basename_lower = Path(hive_path).name.lower()
+        from collectors.windows.browser import detect_browser_kind as _detect_browser
+
+        is_browser_history = (
+            browser_kind_hint is not None
+            or (basename_lower == "history" and _detect_browser(hive_path) != "unknown")
+        )
+
+        if is_browser_history:
+            from collectors.windows.browser import collect_browser_history
+            from parsers.browser import parse_browser_history
+
+            artifact = collect_browser_history(
+                hive_path,
+                host_id=host_id_hint,
+                browser_kind=browser_kind_hint,
+            )
+            events = parse_browser_history(
+                artifact.source_path,
+                collection_id=collection_id,
+                host_id_hint=host_id_hint,
+                user_hint=user_hint,
+                browser_kind=artifact.browser_kind,
+            )
+            host_id = host_id_hint
+            note = f"browser_history ({artifact.browser_kind}): {artifact.source_path}"
+            kind_out = f"{artifact.browser_kind}.history"
+        elif lower.endswith(".evtx"):
             from collectors.windows.evtx import collect_evtx
             from parsers.evtx import parse_evtx
 
@@ -212,18 +240,21 @@ def _make_run_triage_directory(store: EventStore):
             return {"ok": False, "error": "missing 'dir_path' string"}
         host_id_hint = request.get("host_id_hint") or socket.gethostname()
 
+        from collectors.windows.browser import collect_browser_history
         from collectors.windows.evtx import collect_evtx
         from collectors.windows.hive import collect_hive
         from collectors.windows.jumplist import collect_jumplist
         from collectors.windows.lnk import collect_lnk
         from collectors.windows.prefetch import collect_prefetch
         from collectors.windows.user_hives import (
+            discover_browser_histories,
             discover_evtx_files,
             discover_hives,
             discover_jumplist_files,
             discover_lnk_files,
             discover_prefetch_files,
         )
+        from parsers.browser import parse_browser_history
         from parsers.evtx import parse_evtx
         from parsers.jumplist import parse_jumplist
         from parsers.lnk import parse_lnk
@@ -235,12 +266,16 @@ def _make_run_triage_directory(store: EventStore):
         prefetch_files = discover_prefetch_files(dir_path)
         lnk_files = discover_lnk_files(dir_path)
         jumplist_files = discover_jumplist_files(dir_path)
-        if not (hives or evtx_files or prefetch_files or lnk_files or jumplist_files):
+        browser_files = discover_browser_histories(dir_path)
+        if not (
+            hives or evtx_files or prefetch_files
+            or lnk_files or jumplist_files or browser_files
+        ):
             return {
                 "ok": False,
                 "error": (
-                    f"no registry hives, .evtx, .pf, .lnk, or JumpList files "
-                    f"found under {dir_path!r}"
+                    f"no registry hives, .evtx, .pf, .lnk, JumpList, or browser "
+                    f"History files found under {dir_path!r}"
                 ),
             }
 
@@ -402,6 +437,39 @@ def _make_run_triage_directory(store: EventStore):
                     "error": f"{type(exc).__name__}: {exc}",
                 })
 
+        for bh in browser_files:
+            try:
+                artifact = collect_browser_history(
+                    bh.path,
+                    host_id=host_id,
+                    browser_kind=bh.browser_kind,
+                )
+                events = parse_browser_history(
+                    artifact.source_path,
+                    collection_id=collection_id,
+                    host_id_hint=host_id,
+                    user_hint=bh.user_hint,
+                    browser_kind=artifact.browser_kind,
+                )
+                inserted = store.insert_events(events)
+                total += inserted
+                per_hive.append({
+                    "kind": f"{artifact.browser_kind}.history",
+                    "path": str(bh.path),
+                    "user_hint": bh.user_hint,
+                    "sha256": artifact.sha256,
+                    "size_bytes": artifact.size_bytes,
+                    "event_count": inserted,
+                })
+            except Exception as exc:
+                log.exception("parse failed for %s", bh.path)
+                per_hive.append({
+                    "kind": f"{bh.browser_kind}.history",
+                    "path": str(bh.path),
+                    "user_hint": bh.user_hint,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+
         return {
             "collection_id": collection_id,
             "host_id": host_id,
@@ -528,6 +596,17 @@ def _make_query_usb_devices(store: EventStore):
     return handler
 
 
+def _make_query_browser_domains(store: EventStore):
+    def handler(request: dict[str, Any]) -> dict[str, Any]:
+        rows = store.query_browser_domains(
+            collection_id=request.get("collection_id"),
+            limit=int(request.get("limit", 1000)),
+        )
+        return {"domains": rows, "total": len(rows)}
+
+    return handler
+
+
 def _make_query_events(store: EventStore):
     def handler(request: dict[str, Any]) -> dict[str, Any]:
         events = store.query_events(
@@ -640,6 +719,7 @@ def build_dispatcher(
         "query_program_execution_composite",
         _make_query_program_execution_composite(store),
     )
+    dispatcher.register("query_browser_domains", _make_query_browser_domains(store))
     return dispatcher
 
 

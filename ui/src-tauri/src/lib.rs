@@ -123,6 +123,17 @@ async fn query_usb_devices(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn query_browser_domains(
+    sidecar: State<'_, Sidecar>,
+    args: Value,
+) -> Result<Value, String> {
+    sidecar
+        .request("query_browser_domains", args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -150,6 +161,7 @@ pub fn run() {
             evaluate_rules,
             query_findings,
             query_usb_devices,
+            query_browser_domains,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -337,6 +337,70 @@ class EventStore:
         rows = self._conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
+    def query_browser_domains(
+        self,
+        *,
+        collection_id: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Roll up Chromium-family browser events one row per host/domain.
+
+        Visits use evidence ``host``; downloads use evidence ``source_host``;
+        searches use evidence ``host``. Rows with no host (e.g. ``file://``
+        URLs, malformed entries) are bucketed under ``"(no host)"`` rather
+        than dropped, so the examiner doesn't lose evidence silently.
+        """
+        where = ["event_type IN ('browser_visit', 'browser_download', 'browser_search')"]
+        params: list[Any] = []
+        if collection_id is not None:
+            where.append("collection_id = ?")
+            params.append(collection_id)
+        where_sql = " WHERE " + " AND ".join(where)
+        sql = f"""
+            WITH rolled AS (
+                SELECT
+                    COALESCE(
+                        NULLIF(json_extract(evidence_json, '$.host'), ''),
+                        NULLIF(json_extract(evidence_json, '$.source_host'), ''),
+                        '(no host)'
+                    ) AS host,
+                    event_type,
+                    timestamp,
+                    source_artifact
+                FROM events
+                {where_sql}
+            )
+            SELECT
+                host,
+                SUM(CASE WHEN event_type = 'browser_visit'    THEN 1 ELSE 0 END) AS visit_count,
+                SUM(CASE WHEN event_type = 'browser_download' THEN 1 ELSE 0 END) AS download_count,
+                SUM(CASE WHEN event_type = 'browser_search'   THEN 1 ELSE 0 END) AS search_count,
+                MIN(timestamp) AS first_seen,
+                MAX(timestamp) AS last_seen,
+                GROUP_CONCAT(DISTINCT source_artifact) AS browsers,
+                COUNT(*) AS event_count
+            FROM rolled
+            GROUP BY host
+            ORDER BY last_seen DESC NULLS LAST, event_count DESC
+            LIMIT ?
+        """
+        params.append(limit)
+        rows = self._conn.execute(sql, params).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            browsers = sorted({b for b in (r["browsers"] or "").split(",") if b})
+            out.append({
+                "host": r["host"],
+                "visit_count": int(r["visit_count"] or 0),
+                "download_count": int(r["download_count"] or 0),
+                "search_count": int(r["search_count"] or 0),
+                "first_seen": r["first_seen"],
+                "last_seen": r["last_seen"],
+                "browsers": browsers,
+                "event_count": int(r["event_count"]),
+            })
+        return out
+
     def get_event(self, event_id: str) -> dict[str, Any] | None:
         row = self._conn.execute(
             "SELECT event_id, collection_id, timestamp, timestamp_source, host_os, "

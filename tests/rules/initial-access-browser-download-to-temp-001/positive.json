@@ -1,0 +1,29 @@
+[
+  {
+    "event_id": "p1",
+    "event_type": "browser_download",
+    "source_artifact": "chrome.history",
+    "evidence": {
+      "filename": "stub.exe",
+      "target_path": "C:\\Users\\alice\\AppData\\Local\\Temp\\stub.exe"
+    }
+  },
+  {
+    "event_id": "p2",
+    "event_type": "browser_download",
+    "source_artifact": "edge.history",
+    "evidence": {
+      "filename": "loader.bin",
+      "target_path": "C:\\Windows\\Temp\\loader.bin"
+    }
+  },
+  {
+    "event_id": "p3",
+    "event_type": "browser_download",
+    "source_artifact": "chrome.history",
+    "evidence": {
+      "filename": "payload",
+      "target_path": "C:\\Users\\Public\\payload"
+    }
+  }
+]

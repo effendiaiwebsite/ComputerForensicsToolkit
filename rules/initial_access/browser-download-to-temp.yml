@@ -1,0 +1,20 @@
+id: initial-access-browser-download-to-temp-001
+title: Browser download landed in a user-writable / temporary location
+description: |
+  A browser download was saved into a directory that's a common staging
+  area for malicious payloads — %Temp%, %AppData%, %ProgramData%\Temp, or
+  the system Temp. Legitimate downloads usually land in Downloads; a save
+  target inside these locations often indicates a drive-by, exploit-kit
+  drop, or a deliberately-hidden payload. The default Chromium Downloads
+  folder is explicitly excluded so we don't drown the examiner.
+severity: medium
+mitre:
+  techniques: [T1105]
+  tactics: [command-and-control]
+references:
+  - https://attack.mitre.org/techniques/T1105/
+
+match:
+  event_type: browser_download
+  evidence.target_path:
+    regex: '(?i)\\(AppData\\Local\\Temp|AppData\\Roaming|ProgramData\\Temp|Windows\\Temp|Users\\Public)\\'

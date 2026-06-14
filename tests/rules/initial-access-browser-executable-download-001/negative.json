@@ -1,0 +1,26 @@
+[
+  {
+    "event_id": "n1",
+    "event_type": "browser_download",
+    "source_artifact": "chrome.history",
+    "evidence": {
+      "filename": "spreadsheet.xlsx",
+      "target_path": "C:\\Users\\alice\\Downloads\\spreadsheet.xlsx"
+    }
+  },
+  {
+    "event_id": "n2",
+    "event_type": "browser_visit",
+    "source_artifact": "chrome.history",
+    "evidence": { "url": "https://example.com/installer.exe", "host": "example.com" }
+  },
+  {
+    "event_id": "n3",
+    "event_type": "browser_download",
+    "source_artifact": "edge.history",
+    "evidence": {
+      "filename": "image.png",
+      "target_path": "C:\\Users\\alice\\Downloads\\image.png"
+    }
+  }
+]

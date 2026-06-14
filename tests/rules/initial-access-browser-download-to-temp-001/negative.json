@@ -1,0 +1,26 @@
+[
+  {
+    "event_id": "n1",
+    "event_type": "browser_download",
+    "source_artifact": "chrome.history",
+    "evidence": {
+      "filename": "installer.exe",
+      "target_path": "C:\\Users\\alice\\Downloads\\installer.exe"
+    }
+  },
+  {
+    "event_id": "n2",
+    "event_type": "browser_download",
+    "source_artifact": "edge.history",
+    "evidence": {
+      "filename": "doc.pdf",
+      "target_path": "C:\\Users\\alice\\Desktop\\doc.pdf"
+    }
+  },
+  {
+    "event_id": "n3",
+    "event_type": "browser_visit",
+    "source_artifact": "chrome.history",
+    "evidence": { "url": "https://example.com/AppData/Local/Temp/", "host": "example.com" }
+  }
+]

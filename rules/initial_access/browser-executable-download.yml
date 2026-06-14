@@ -1,0 +1,21 @@
+id: initial-access-browser-executable-download-001
+title: Browser downloaded an executable / scriptable file type
+description: |
+  A Chromium-family browser (Chrome / Edge / Brave) recorded a download
+  whose target filename ends in an executable or scriptable extension
+  (.exe, .msi, .scr, .bat, .cmd, .ps1, .vbs, .js, .jse, .hta, .lnk, .com,
+  .pif). In an investigation this is the start of a "user fetched the
+  malware" timeline — pair it with subsequent program_execution evidence
+  for the same filename to confirm execution. Whitelisted updaters (Slack,
+  Zoom, etc.) will trigger this too; treat as triage signal, not verdict.
+severity: medium
+mitre:
+  techniques: [T1204.002]
+  tactics: [initial-access, execution]
+references:
+  - https://attack.mitre.org/techniques/T1204/002/
+
+match:
+  event_type: browser_download
+  evidence.filename:
+    regex: '(?i)\.(exe|msi|scr|bat|cmd|ps1|psm1|psd1|vbs|vbe|js|jse|hta|lnk|com|pif)$'

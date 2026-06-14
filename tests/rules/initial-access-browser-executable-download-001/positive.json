@@ -1,0 +1,29 @@
+[
+  {
+    "event_id": "p1",
+    "event_type": "browser_download",
+    "source_artifact": "chrome.history",
+    "evidence": {
+      "filename": "installer.exe",
+      "target_path": "C:\\Users\\alice\\Downloads\\installer.exe"
+    }
+  },
+  {
+    "event_id": "p2",
+    "event_type": "browser_download",
+    "source_artifact": "edge.history",
+    "evidence": {
+      "filename": "Invoke-Payload.ps1",
+      "target_path": "C:\\Users\\alice\\Downloads\\Invoke-Payload.ps1"
+    }
+  },
+  {
+    "event_id": "p3",
+    "event_type": "browser_download",
+    "source_artifact": "chrome.history",
+    "evidence": {
+      "filename": "report.hta",
+      "target_path": "C:\\Users\\alice\\Downloads\\report.hta"
+    }
+  }
+]

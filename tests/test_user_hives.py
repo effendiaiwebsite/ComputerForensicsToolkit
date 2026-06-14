@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from collectors.windows.user_hives import discover_hives
+from collectors.windows.user_hives import discover_browser_histories, discover_hives
 
 
 def test_flat_dump_layout(tmp_path: Path) -> None:
@@ -69,3 +69,19 @@ def test_evtx_files_are_not_classified_as_hives(tmp_path: Path) -> None:
     (tmp_path / "SYSTEM").write_bytes(b"\x00")
     kinds = {h.kind for h in discover_hives(tmp_path)}
     assert kinds == {"system"}
+
+
+def test_discover_browser_histories_matches_chrome_and_edge(tmp_path: Path) -> None:
+    chrome = tmp_path / "Users" / "alice" / "AppData" / "Local" / "Google" / "Chrome" / "User Data" / "Default"
+    edge = tmp_path / "Users" / "alice" / "AppData" / "Local" / "Microsoft" / "Edge" / "User Data" / "Default"
+    chrome.mkdir(parents=True)
+    edge.mkdir(parents=True)
+    (chrome / "History").write_bytes(b"\x00")
+    (edge / "History").write_bytes(b"\x00")
+    # Unrelated SQLite-shaped file at a non-browser path → must not match.
+    (tmp_path / "History").write_bytes(b"\x00")
+
+    found = discover_browser_histories(tmp_path)
+    kinds = {h.browser_kind for h in found}
+    assert kinds == {"chrome", "edge"}
+    assert all(h.user_hint == "alice" for h in found)

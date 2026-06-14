@@ -7,7 +7,7 @@ import {
   type ColumnDef,
   type SortingState,
 } from "@tanstack/react-table";
-import { Activity, ArrowDown, ArrowUp, FolderOpen, FolderTree, Layers, ShieldAlert, Table2, Usb, X } from "lucide-react";
+import { Activity, ArrowDown, ArrowUp, FolderOpen, FolderTree, Globe, Layers, ShieldAlert, Table2, Usb, X } from "lucide-react";
 
 import { Timeline } from "@/components/Timeline";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,7 @@ import {
   evaluateRules,
   getEvent,
   pingSidecar,
+  queryBrowserDomains,
   queryEvents,
   queryFindings,
   queryProgramExecutionComposite,
@@ -23,6 +24,7 @@ import {
   queryUsbDevices,
   runTriageDirectory,
   runTriageHive,
+  type BrowserDomain,
   type ExecutionCompositeRow,
   type Finding,
   type ForensicEvent,
@@ -32,7 +34,7 @@ import {
 } from "@/lib/dft";
 import { cn } from "@/lib/utils";
 
-type ViewMode = "events" | "execution" | "timeline" | "findings" | "devices";
+type ViewMode = "events" | "execution" | "timeline" | "findings" | "devices" | "browser";
 
 const SEVERITY_BADGE: Record<Finding["severity"], string> = {
   critical: "bg-error/20 text-error border-error/40",
@@ -103,6 +105,9 @@ const EVENT_TYPE_PRIORITY: string[] = [
   "usb_connection",
   "service_install",
   "account_change",
+  "browser_download",
+  "browser_visit",
+  "browser_search",
   "file_access",
   "shell_command",
   "system_config_change",
@@ -256,6 +261,7 @@ export default function App() {
   const [findingsBySeverity, setFindingsBySeverity] = useState<Record<string, number>>({});
   const [activeSeverity, setActiveSeverity] = useState<Set<Finding["severity"]>>(new Set());
   const [usbDevices, setUsbDevices] = useState<UsbDevice[]>([]);
+  const [browserDomains, setBrowserDomains] = useState<BrowserDomain[]>([]);
 
   useEffect(() => {
     pingSidecar()
@@ -323,6 +329,22 @@ export default function App() {
           setUsbDevices(res.devices);
         } else {
           setSidecar({ kind: "error", message: res.error ?? "usb devices query failed" });
+        }
+      } catch (err) {
+        setSidecar({ kind: "error", message: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
+    if (view === "browser") {
+      try {
+        const res = await queryBrowserDomains({
+          collection_id: collection.collection_id,
+          limit: 1000,
+        });
+        if (res.ok) {
+          setBrowserDomains(res.domains);
+        } else {
+          setSidecar({ kind: "error", message: res.error ?? "browser domains query failed" });
         }
       } catch (err) {
         setSidecar({ kind: "error", message: err instanceof Error ? err.message : String(err) });
@@ -520,7 +542,7 @@ export default function App() {
             DFT — Digital Forensics Triage Toolkit
           </h1>
           <span className="font-mono text-xs text-muted-foreground">
-            Phase 1 · Windows · M8
+            Phase 1 · Windows · M9
           </span>
         </div>
         <div className="flex items-center gap-3">
@@ -600,6 +622,20 @@ export default function App() {
               <Usb className="h-3 w-3" />
               Devices
             </button>
+            <button
+              type="button"
+              onClick={() => setView("browser")}
+              className={cn(
+                "px-3 py-1.5 text-xs font-mono inline-flex items-center gap-1.5 border-l border-border",
+                view === "browser"
+                  ? "bg-accent text-accent-foreground"
+                  : "bg-muted/30 text-muted-foreground hover:text-foreground",
+              )}
+              disabled={!collection}
+            >
+              <Globe className="h-3 w-3" />
+              Browser
+            </button>
           </div>
           <StatusPill state={sidecar} />
           <Button onClick={openHive} disabled={sidecar.kind === "running"} size="sm">
@@ -640,7 +676,7 @@ export default function App() {
         </div>
       </div>
 
-      {view !== "execution" && view !== "devices" && collection && chipEntries.length > 0 && (
+      {view !== "execution" && view !== "devices" && view !== "browser" && collection && chipEntries.length > 0 && (
         <div className="flex flex-wrap gap-2 border-b border-border bg-muted/5 px-4 py-2">
           {chipEntries.map(([type, count]) => (
             <Chip
@@ -780,7 +816,7 @@ export default function App() {
                   }
                 }}
               />
-            ) : (
+            ) : view === "devices" ? (
               <DevicesTable
                 devices={usbDevices}
                 hasCollection={!!collection}
@@ -796,6 +832,8 @@ export default function App() {
                   }
                 }}
               />
+            ) : (
+              <BrowserTable domains={browserDomains} hasCollection={!!collection} />
             )}
           </div>
         </main>
@@ -804,14 +842,16 @@ export default function App() {
 
       <footer className="border-t border-border bg-muted/30 px-4 py-1 font-mono text-xs text-muted-foreground">
         {view === "events"
-          ? `events: ${events.length} of ${total} · findings: ${findingsTotal} · M8`
+          ? `events: ${events.length} of ${total} · findings: ${findingsTotal} · M9`
           : view === "execution"
-          ? `unique programs: ${execRows.length} of ${execTotal} · findings: ${findingsTotal} · M8`
+          ? `unique programs: ${execRows.length} of ${execTotal} · findings: ${findingsTotal} · M9`
           : view === "timeline"
-          ? `timeline: ${timelinePoints.length} dated points across ${timelineCategories.length} tracks (${timelineSkippedNull} undated) · findings: ${findingsTotal} · M8`
+          ? `timeline: ${timelinePoints.length} dated points across ${timelineCategories.length} tracks (${timelineSkippedNull} undated) · findings: ${findingsTotal} · M9`
           : view === "findings"
-          ? `findings: ${findings.length} of ${findingsTotal} · M8`
-          : `usb devices: ${usbDevices.length} · findings: ${findingsTotal} · M8`}
+          ? `findings: ${findings.length} of ${findingsTotal} · M9`
+          : view === "devices"
+          ? `usb devices: ${usbDevices.length} · findings: ${findingsTotal} · M9`
+          : `browser hosts: ${browserDomains.length} · findings: ${findingsTotal} · M9`}
       </footer>
     </div>
   );
@@ -1077,6 +1117,81 @@ function DevicesTable({
               {d.last_removed ?? "—"}
             </td>
             <td className="px-3 py-1.5 align-top text-right">{d.event_count}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function BrowserTable({
+  domains,
+  hasCollection,
+}: {
+  domains: BrowserDomain[];
+  hasCollection: boolean;
+}) {
+  if (domains.length === 0) {
+    return (
+      <table className="w-full border-collapse text-left font-mono text-xs">
+        <tbody>
+          <tr>
+            <td className="px-3 py-16 text-center text-muted-foreground">
+              {hasCollection ? (
+                <>
+                  No browser activity in this collection. Load a Chromium-family
+                  <span className="text-foreground"> History</span> DB to populate
+                  <span className="text-foreground"> browser_visit</span>,
+                  <span className="text-foreground"> browser_download</span>, and
+                  <span className="text-foreground"> browser_search</span> events.
+                </>
+              ) : (
+                <>
+                  No collection loaded. Click <span className="text-foreground">Open hive…</span> to begin.
+                </>
+              )}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    );
+  }
+  return (
+    <table className="w-full border-collapse text-left font-mono text-xs">
+      <thead className="sticky top-0 bg-muted/60 backdrop-blur">
+        <tr className="border-b border-border">
+          <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground">Host</th>
+          <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground">Browsers</th>
+          <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground text-right">Visits</th>
+          <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground text-right">Downloads</th>
+          <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground text-right">Searches</th>
+          <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground">First seen</th>
+          <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground">Last seen</th>
+        </tr>
+      </thead>
+      <tbody>
+        {domains.map((d) => (
+          <tr key={d.host} className="border-b border-border hover:bg-muted/40">
+            <td className="px-3 py-1.5 align-top">
+              <span className="break-all text-foreground" title={d.host}>{d.host}</span>
+            </td>
+            <td className="px-3 py-1.5 align-top text-muted-foreground">
+              {d.browsers.length ? d.browsers.join(", ") : "—"}
+            </td>
+            <td className="px-3 py-1.5 align-top text-right">{d.visit_count}</td>
+            <td
+              className={cn(
+                "px-3 py-1.5 align-top text-right",
+                d.download_count > 0 ? "text-warning" : "",
+              )}
+            >
+              {d.download_count}
+            </td>
+            <td className="px-3 py-1.5 align-top text-right">{d.search_count}</td>
+            <td className="px-3 py-1.5 align-top whitespace-nowrap text-muted-foreground">
+              {d.first_seen ?? "—"}
+            </td>
+            <td className="px-3 py-1.5 align-top whitespace-nowrap">{d.last_seen ?? "—"}</td>
           </tr>
         ))}
       </tbody>

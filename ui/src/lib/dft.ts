@@ -96,6 +96,7 @@ export async function runTriageHive(args: {
   hive_path: string;
   kind?: string;
   user_hint?: string;
+  browser_kind?: "chrome" | "edge" | "brave" | "unknown";
   collection_id?: string;
   host_id_hint?: string;
 }): Promise<TriageHiveResult> {
@@ -186,6 +187,31 @@ export async function queryUsbDevices(args: {
   limit?: number;
 }): Promise<UsbDevicesResult> {
   return invoke<UsbDevicesResult>("query_usb_devices", { args });
+}
+
+export type BrowserDomain = {
+  host: string;
+  visit_count: number;
+  download_count: number;
+  search_count: number;
+  first_seen: string | null;
+  last_seen: string | null;
+  browsers: string[];
+  event_count: number;
+};
+
+export type BrowserDomainsResult = {
+  ok: boolean;
+  domains: BrowserDomain[];
+  total: number;
+  error?: string;
+};
+
+export async function queryBrowserDomains(args: {
+  collection_id?: string;
+  limit?: number;
+}): Promise<BrowserDomainsResult> {
+  return invoke<BrowserDomainsResult>("query_browser_domains", { args });
 }
 
 export type GetEventResult = {

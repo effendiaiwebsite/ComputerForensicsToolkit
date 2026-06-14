@@ -19,6 +19,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from collectors.windows.browser import BrowserKind, detect_browser_kind
 from collectors.windows.hive import HiveKind
 
 _NAME_TO_KIND: dict[str, HiveKind] = {
@@ -167,6 +168,44 @@ def discover_jumplist_files(directory: str | Path) -> list[DiscoveredJumpList]:
         for p in root.rglob("*.automaticDestinations-ms")
         if p.is_file()
     ]
+    found.sort(key=lambda e: str(e.path))
+    return found
+
+
+@dataclass
+class DiscoveredBrowserHistory:
+    path: Path
+    browser_kind: BrowserKind
+    user_hint: str | None = None
+
+
+def discover_browser_histories(directory: str | Path) -> list[DiscoveredBrowserHistory]:
+    """Walk the directory for Chromium-family History SQLite files.
+
+    We match by path segment per locked decision in M9 planning — a file
+    contributes only if it sits under a recognised browser path
+    (``...Google\\Chrome\\...``, ``...Microsoft\\Edge\\...``,
+    ``...BraveSoftware\\Brave-Browser\\...``) AND its basename is
+    ``History`` (case-insensitive). This avoids false positives on
+    unrelated SQLite blobs named ``History`` in other locations.
+    """
+    root = Path(directory).resolve()
+    if not root.is_dir():
+        raise NotADirectoryError(f"not a directory: {root}")
+    found: list[DiscoveredBrowserHistory] = []
+    for entry in root.rglob("*"):
+        if not entry.is_file() or entry.name.lower() != "history":
+            continue
+        kind = detect_browser_kind(entry)
+        if kind == "unknown":
+            continue
+        found.append(
+            DiscoveredBrowserHistory(
+                path=entry,
+                browser_kind=kind,
+                user_hint=_user_from_path(entry, root),
+            ),
+        )
     found.sort(key=lambda e: str(e.path))
     return found
 
