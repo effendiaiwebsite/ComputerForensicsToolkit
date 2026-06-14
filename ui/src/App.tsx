@@ -7,8 +7,9 @@ import {
   type ColumnDef,
   type SortingState,
 } from "@tanstack/react-table";
-import { Activity, ArrowDown, ArrowUp, FolderOpen, FolderTree, Globe, Layers, ShieldAlert, Table2, Usb, X } from "lucide-react";
+import { Activity, ArrowDown, ArrowUp, FolderOpen, FolderTree, Globe, Layers, ShieldAlert, Table2, Usb } from "lucide-react";
 
+import { DetailPane } from "@/components/DetailPane";
 import { Timeline } from "@/components/Timeline";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -178,65 +179,6 @@ function Chip({
       <span>{label}</span>
       <span className={cn("rounded px-1.5 py-0 text-[10px]", active ? "bg-accent/30" : "bg-muted/60")}>{count}</span>
     </button>
-  );
-}
-
-function DetailPane({ event, onClose }: { event: ForensicEvent | null; onClose: () => void }) {
-  if (!event) return null;
-  return (
-    <aside className="flex w-[480px] flex-col border-l border-border bg-muted/20">
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <div className="font-mono text-xs uppercase tracking-wide text-muted-foreground">
-          Event detail
-        </div>
-        <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close">
-          <X className="h-4 w-4" />
-        </Button>
-      </div>
-      <div className="flex-1 overflow-auto p-3 font-mono text-xs">
-        <div className="mb-2">
-          <div className="text-muted-foreground">summary</div>
-          <div className="text-foreground">{event.summary}</div>
-        </div>
-        <div className="mb-2 grid grid-cols-2 gap-x-3 gap-y-1">
-          <Field k="time" v={event.timestamp ?? "—"} />
-          <Field k="time source" v={event.timestamp_source} />
-          <Field k="event_type" v={event.event_type} />
-          <Field k="source" v={event.source_artifact} />
-          <Field k="host" v={event.host_id} />
-          <Field k="user" v={event.user ?? "—"} />
-          <Field k="parser" v={event.parser_version} />
-          <Field k="event_id" v={event.event_id} />
-        </div>
-        <Section title="evidence" data={event.evidence} />
-        <Section title="raw" data={event.raw} />
-        <div className="mt-3 break-all text-muted-foreground">
-          source_path: <span className="text-foreground">{event.source_path}</span>
-        </div>
-      </div>
-    </aside>
-  );
-}
-
-function Field({ k, v }: { k: string; v: string }) {
-  return (
-    <>
-      <div className="text-muted-foreground">{k}</div>
-      <div className="truncate text-foreground" title={v}>
-        {v}
-      </div>
-    </>
-  );
-}
-
-function Section({ title, data }: { title: string; data: Record<string, unknown> }) {
-  return (
-    <div className="mt-3">
-      <div className="mb-1 text-muted-foreground uppercase tracking-wide">{title}</div>
-      <pre className="overflow-auto rounded border border-border bg-background/50 p-2 text-[11px] leading-[1.35]">
-        {JSON.stringify(data, null, 2)}
-      </pre>
-    </div>
   );
 }
 
