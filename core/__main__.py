@@ -607,6 +607,46 @@ def _make_query_browser_domains(store: EventStore):
     return handler
 
 
+def _make_generate_report(store: EventStore):
+    def handler(request: dict[str, Any]) -> dict[str, Any]:
+        from hashlib import sha256
+
+        from core.report import generate_report
+
+        collection_id = request.get("collection_id")
+        output_path = request.get("output_path")
+        case_name = request.get("case_name") or "Untitled case"
+        examiner = request.get("examiner") or "—"
+        if not isinstance(collection_id, str) or not collection_id:
+            return {"ok": False, "error": "missing 'collection_id' string"}
+        if not isinstance(output_path, str) or not output_path:
+            return {"ok": False, "error": "missing 'output_path' string"}
+
+        try:
+            html_text = generate_report(
+                store,
+                collection_id,
+                case_name=case_name,
+                examiner=examiner,
+            )
+        except Exception as exc:
+            log.exception("report generation failed for %s", collection_id)
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        out = Path(output_path).resolve()
+        out.parent.mkdir(parents=True, exist_ok=True)
+        data = html_text.encode("utf-8")
+        out.write_bytes(data)
+        return {
+            "collection_id": collection_id,
+            "output_path": str(out),
+            "size_bytes": len(data),
+            "sha256": sha256(data).hexdigest(),
+        }
+
+    return handler
+
+
 def _make_query_events(store: EventStore):
     def handler(request: dict[str, Any]) -> dict[str, Any]:
         events = store.query_events(
@@ -720,10 +760,20 @@ def build_dispatcher(
         _make_query_program_execution_composite(store),
     )
     dispatcher.register("query_browser_domains", _make_query_browser_domains(store))
+    dispatcher.register("generate_report", _make_generate_report(store))
     return dispatcher
 
 
 def main() -> None:
+    # Force UTF-8 on the IPC channel so non-ASCII (em-dashes, Unicode names,
+    # paths with accented chars) survives the round trip from the Tauri shell
+    # — Windows defaults sys.stdin/out to cp1252, which silently mojibakes
+    # JSON payloads from the Rust side that are already UTF-8 bytes.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, OSError):
+            pass
     serve_stdio(build_dispatcher())
 
 

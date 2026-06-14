@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   flexRender,
   getCoreRowModel,
@@ -7,7 +7,7 @@ import {
   type ColumnDef,
   type SortingState,
 } from "@tanstack/react-table";
-import { Activity, ArrowDown, ArrowUp, FolderOpen, FolderTree, Globe, Layers, ShieldAlert, Table2, Usb } from "lucide-react";
+import { Activity, ArrowDown, ArrowUp, FileText, FolderOpen, FolderTree, Globe, Layers, ShieldAlert, Table2, Usb, X } from "lucide-react";
 
 import { DetailPane } from "@/components/DetailPane";
 import { Timeline } from "@/components/Timeline";
@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   evaluateRules,
+  generateReport,
   getEvent,
   pingSidecar,
   queryBrowserDomains,
@@ -204,6 +205,7 @@ export default function App() {
   const [activeSeverity, setActiveSeverity] = useState<Set<Finding["severity"]>>(new Set());
   const [usbDevices, setUsbDevices] = useState<UsbDevice[]>([]);
   const [browserDomains, setBrowserDomains] = useState<BrowserDomain[]>([]);
+  const [reportOpen, setReportOpen] = useState(false);
 
   useEffect(() => {
     pingSidecar()
@@ -593,8 +595,28 @@ export default function App() {
             <FolderTree className="h-4 w-4" />
             Open directory…
           </Button>
+          <Button
+            onClick={() => setReportOpen(true)}
+            disabled={sidecar.kind === "running" || !collection}
+            size="sm"
+            variant="secondary"
+          >
+            <FileText className="h-4 w-4" />
+            Generate report…
+          </Button>
         </div>
       </header>
+
+      {reportOpen && collection && (
+        <ReportModal
+          collection={collection}
+          onClose={() => setReportOpen(false)}
+          onGenerated={(path) =>
+            setSidecar({ kind: "ok", info: { ok: true, sidecar_version: `saved: ${path}` } })
+          }
+          onError={(message) => setSidecar({ kind: "error", message })}
+        />
+      )}
 
       <div className="flex items-center gap-3 border-b border-border bg-muted/10 px-4 py-2">
         <div className="w-80 shrink-0">
@@ -1138,5 +1160,99 @@ function BrowserTable({
         ))}
       </tbody>
     </table>
+  );
+}
+
+function ReportModal({
+  collection,
+  onClose,
+  onGenerated,
+  onError,
+}: {
+  collection: Collection;
+  onClose: () => void;
+  onGenerated: (path: string) => void;
+  onError: (message: string) => void;
+}) {
+  const [caseName, setCaseName] = useState(`Triage — ${collection.host_id}`);
+  const [examiner, setExaminer] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+      const defaultName = `dft-report-${collection.host_id}-${today}.html`;
+      const target = await saveDialog({
+        title: "Save DFT report",
+        defaultPath: defaultName,
+        filters: [{ name: "HTML", extensions: ["html"] }],
+      });
+      if (!target) {
+        setBusy(false);
+        return;
+      }
+      const res = await generateReport({
+        collection_id: collection.collection_id,
+        output_path: target,
+        case_name: caseName.trim() || "Untitled case",
+        examiner: examiner.trim() || "—",
+      });
+      if (res.ok) {
+        onGenerated(res.output_path);
+        onClose();
+      } else {
+        onError(res.error ?? "report generation failed");
+      }
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="w-[420px] rounded-md border border-border bg-card p-4 font-mono text-xs shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-3 flex items-center justify-between">
+          <div className="text-sm font-semibold">Generate report</div>
+          <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close">
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+        <div className="mb-3">
+          <label className="mb-1 block text-muted-foreground">Case name</label>
+          <Input value={caseName} onChange={(e) => setCaseName(e.target.value)} autoFocus />
+        </div>
+        <div className="mb-3">
+          <label className="mb-1 block text-muted-foreground">Examiner</label>
+          <Input
+            value={examiner}
+            onChange={(e) => setExaminer(e.target.value)}
+            placeholder="your name"
+          />
+        </div>
+        <div className="mb-3 text-muted-foreground">
+          {collection.event_count.toLocaleString()} events from{" "}
+          <span className="text-foreground">{collection.host_id}</span> will be summarised. PDF
+          export: open the HTML in your browser, Ctrl+P → Save as PDF.
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button size="sm" onClick={submit} disabled={busy}>
+            {busy ? "Generating…" : "Save report…"}
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }

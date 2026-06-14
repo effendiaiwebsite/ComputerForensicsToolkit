@@ -116,6 +116,33 @@ class EventStore:
             (collection_id, host_id, host_os, created_at, note),
         )
 
+    def get_collection(self, collection_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT collection_id, host_id, host_os, created_at, note "
+            "FROM collections WHERE collection_id = ?",
+            (collection_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def timestamp_range(
+        self,
+        *,
+        collection_id: str | None = None,
+    ) -> tuple[str | None, str | None]:
+        """Return ``(min, max)`` ISO timestamps for dated events, ``(None, None)`` if empty."""
+        where = "WHERE timestamp IS NOT NULL"
+        params: list[Any] = []
+        if collection_id is not None:
+            where += " AND collection_id = ?"
+            params.append(collection_id)
+        row = self._conn.execute(
+            f"SELECT MIN(timestamp) AS lo, MAX(timestamp) AS hi FROM events {where}",
+            params,
+        ).fetchone()
+        if row is None:
+            return None, None
+        return row["lo"], row["hi"]
+
     def insert_events(self, events: Iterable[Event]) -> int:
         rows = [
             (

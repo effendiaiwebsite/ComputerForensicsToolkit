@@ -214,6 +214,24 @@ export async function queryBrowserDomains(args: {
   return invoke<BrowserDomainsResult>("query_browser_domains", { args });
 }
 
+export type GenerateReportResult = {
+  ok: boolean;
+  collection_id: string;
+  output_path: string;
+  size_bytes: number;
+  sha256: string;
+  error?: string;
+};
+
+export async function generateReport(args: {
+  collection_id: string;
+  output_path: string;
+  case_name?: string;
+  examiner?: string;
+}): Promise<GenerateReportResult> {
+  return invoke<GenerateReportResult>("generate_report", { args });
+}
+
 export type GetEventResult = {
   ok: boolean;
   event?: ForensicEvent;

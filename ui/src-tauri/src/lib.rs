@@ -134,6 +134,17 @@ async fn query_browser_domains(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn generate_report(
+    sidecar: State<'_, Sidecar>,
+    args: Value,
+) -> Result<Value, String> {
+    sidecar
+        .request("generate_report", args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -162,6 +173,7 @@ pub fn run() {
             query_findings,
             query_usb_devices,
             query_browser_domains,
+            generate_report,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
