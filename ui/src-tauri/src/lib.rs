@@ -112,6 +112,17 @@ async fn query_findings(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn query_usb_devices(
+    sidecar: State<'_, Sidecar>,
+    args: Value,
+) -> Result<Value, String> {
+    sidecar
+        .request("query_usb_devices", args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -138,6 +149,7 @@ pub fn run() {
             get_event,
             evaluate_rules,
             query_findings,
+            query_usb_devices,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

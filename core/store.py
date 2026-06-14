@@ -305,6 +305,38 @@ class EventStore:
             ).fetchall()
         return {row["severity"]: int(row["c"]) for row in rows}
 
+    def query_usb_devices(
+        self,
+        *,
+        collection_id: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Group ``usb_connection`` events by serial → one row per device."""
+        where = ["event_type = 'usb_connection'"]
+        params: list[Any] = []
+        if collection_id is not None:
+            where.append("collection_id = ?")
+            params.append(collection_id)
+        where_sql = " WHERE " + " AND ".join(where)
+        sql = (
+            "SELECT json_extract(evidence_json, '$.serial') AS serial, "
+            "json_extract(evidence_json, '$.vendor') AS vendor, "
+            "json_extract(evidence_json, '$.product') AS product, "
+            "json_extract(evidence_json, '$.device_name') AS device_name, "
+            "MIN(json_extract(evidence_json, '$.first_installed')) AS first_installed, "
+            "MAX(json_extract(evidence_json, '$.last_connected')) AS last_connected, "
+            "MAX(json_extract(evidence_json, '$.last_removed')) AS last_removed, "
+            "COUNT(*) AS event_count, "
+            "MIN(event_id) AS first_event_id "
+            "FROM events"
+            f"{where_sql} "
+            "GROUP BY serial "
+            "ORDER BY last_connected DESC NULLS LAST LIMIT ?"
+        )
+        params.append(limit)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
     def get_event(self, event_id: str) -> dict[str, Any] | None:
         row = self._conn.execute(
             "SELECT event_id, collection_id, timestamp, timestamp_source, host_os, "

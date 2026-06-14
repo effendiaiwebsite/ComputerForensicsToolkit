@@ -121,15 +121,52 @@ class DiscoveredPrefetch:
 
 
 def discover_prefetch_files(directory: str | Path) -> list[DiscoveredPrefetch]:
-    """Find every ``*.pf`` under the directory."""
     root = Path(directory).resolve()
     if not root.is_dir():
         raise NotADirectoryError(f"not a directory: {root}")
+    found = [
+        DiscoveredPrefetch(path=p)
+        for p in root.rglob("*.pf")
+        if p.is_file()
+    ]
+    found.sort(key=lambda e: str(e.path))
+    return found
 
-    found: list[DiscoveredPrefetch] = []
-    for entry in root.rglob("*.pf"):
-        if entry.is_file():
-            found.append(DiscoveredPrefetch(path=entry))
+
+@dataclass
+class DiscoveredLnk:
+    path: Path
+    user_hint: str | None = None
+
+
+def discover_lnk_files(directory: str | Path) -> list[DiscoveredLnk]:
+    root = Path(directory).resolve()
+    if not root.is_dir():
+        raise NotADirectoryError(f"not a directory: {root}")
+    found = [
+        DiscoveredLnk(path=p, user_hint=_user_from_path(p, root))
+        for p in root.rglob("*.lnk")
+        if p.is_file()
+    ]
+    found.sort(key=lambda e: str(e.path))
+    return found
+
+
+@dataclass
+class DiscoveredJumpList:
+    path: Path
+    user_hint: str | None = None
+
+
+def discover_jumplist_files(directory: str | Path) -> list[DiscoveredJumpList]:
+    root = Path(directory).resolve()
+    if not root.is_dir():
+        raise NotADirectoryError(f"not a directory: {root}")
+    found = [
+        DiscoveredJumpList(path=p, user_hint=_user_from_path(p, root))
+        for p in root.rglob("*.automaticDestinations-ms")
+        if p.is_file()
+    ]
     found.sort(key=lambda e: str(e.path))
     return found
 

@@ -162,6 +162,32 @@ export async function queryTimeline(args: {
   return invoke<TimelineResult>("query_timeline", { args });
 }
 
+export type UsbDevice = {
+  serial: string | null;
+  vendor: string | null;
+  product: string | null;
+  device_name: string | null;
+  first_installed: string | null;
+  last_connected: string | null;
+  last_removed: string | null;
+  event_count: number;
+  first_event_id: string | null;
+};
+
+export type UsbDevicesResult = {
+  ok: boolean;
+  devices: UsbDevice[];
+  total: number;
+  error?: string;
+};
+
+export async function queryUsbDevices(args: {
+  collection_id?: string;
+  limit?: number;
+}): Promise<UsbDevicesResult> {
+  return invoke<UsbDevicesResult>("query_usb_devices", { args });
+}
+
 export type GetEventResult = {
   ok: boolean;
   event?: ForensicEvent;

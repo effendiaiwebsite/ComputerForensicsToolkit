@@ -102,7 +102,7 @@ def _make_run_triage_hive(store: EventStore):
         new_collection = collection_id is None
         collection_id = collection_id or _new_collection_id()
 
-        # Same op handles registry hives, .evtx, and Prefetch — UI doesn't need to know.
+        # Same op handles registry hives, .evtx, .pf, .lnk, JumpLists.
         lower = hive_path.lower()
         if lower.endswith(".evtx"):
             from collectors.windows.evtx import collect_evtx
@@ -131,6 +131,34 @@ def _make_run_triage_hive(store: EventStore):
             host_id = host_id_hint
             note = f"prefetch: {artifact.source_path}"
             kind_out = "prefetch"
+        elif lower.endswith(".lnk"):
+            from collectors.windows.lnk import collect_lnk
+            from parsers.lnk import parse_lnk
+
+            artifact = collect_lnk(hive_path, host_id=host_id_hint)
+            events = parse_lnk(
+                artifact.source_path,
+                collection_id=collection_id,
+                host_id_hint=host_id_hint,
+                user_hint=user_hint,
+            )
+            host_id = host_id_hint
+            note = f"lnk: {artifact.source_path}"
+            kind_out = "lnk"
+        elif lower.endswith(".automaticdestinations-ms"):
+            from collectors.windows.jumplist import collect_jumplist
+            from parsers.jumplist import parse_jumplist
+
+            artifact = collect_jumplist(hive_path, host_id=host_id_hint)
+            events = parse_jumplist(
+                artifact.source_path,
+                collection_id=collection_id,
+                host_id_hint=host_id_hint,
+                user_hint=user_hint,
+            )
+            host_id = host_id_hint
+            note = f"jumplist: {artifact.source_path}"
+            kind_out = "jumplist"
         else:
             from collectors.windows.hive import collect_hive
             from parsers.registry import parse_hive
@@ -186,23 +214,34 @@ def _make_run_triage_directory(store: EventStore):
 
         from collectors.windows.evtx import collect_evtx
         from collectors.windows.hive import collect_hive
+        from collectors.windows.jumplist import collect_jumplist
+        from collectors.windows.lnk import collect_lnk
         from collectors.windows.prefetch import collect_prefetch
         from collectors.windows.user_hives import (
             discover_evtx_files,
             discover_hives,
+            discover_jumplist_files,
+            discover_lnk_files,
             discover_prefetch_files,
         )
         from parsers.evtx import parse_evtx
+        from parsers.jumplist import parse_jumplist
+        from parsers.lnk import parse_lnk
         from parsers.prefetch import parse_prefetch
         from parsers.registry import parse_hive
 
         hives = discover_hives(dir_path)
         evtx_files = discover_evtx_files(dir_path)
         prefetch_files = discover_prefetch_files(dir_path)
-        if not hives and not evtx_files and not prefetch_files:
+        lnk_files = discover_lnk_files(dir_path)
+        jumplist_files = discover_jumplist_files(dir_path)
+        if not (hives or evtx_files or prefetch_files or lnk_files or jumplist_files):
             return {
                 "ok": False,
-                "error": f"no registry hives, .evtx, or .pf files found under {dir_path!r}",
+                "error": (
+                    f"no registry hives, .evtx, .pf, .lnk, or JumpList files "
+                    f"found under {dir_path!r}"
+                ),
             }
 
         collection_id = _new_collection_id()
@@ -304,6 +343,62 @@ def _make_run_triage_directory(store: EventStore):
                     "kind": "prefetch",
                     "path": str(pf.path),
                     "user_hint": None,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+
+        for lk in lnk_files:
+            try:
+                artifact = collect_lnk(lk.path, host_id=host_id)
+                events = parse_lnk(
+                    artifact.source_path,
+                    collection_id=collection_id,
+                    host_id_hint=host_id,
+                    user_hint=lk.user_hint,
+                )
+                inserted = store.insert_events(events)
+                total += inserted
+                per_hive.append({
+                    "kind": "lnk",
+                    "path": str(lk.path),
+                    "user_hint": lk.user_hint,
+                    "sha256": artifact.sha256,
+                    "size_bytes": artifact.size_bytes,
+                    "event_count": inserted,
+                })
+            except Exception as exc:
+                log.exception("parse failed for %s", lk.path)
+                per_hive.append({
+                    "kind": "lnk",
+                    "path": str(lk.path),
+                    "user_hint": lk.user_hint,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+
+        for jl in jumplist_files:
+            try:
+                artifact = collect_jumplist(jl.path, host_id=host_id)
+                events = parse_jumplist(
+                    artifact.source_path,
+                    collection_id=collection_id,
+                    host_id_hint=host_id,
+                    user_hint=jl.user_hint,
+                )
+                inserted = store.insert_events(events)
+                total += inserted
+                per_hive.append({
+                    "kind": "jumplist",
+                    "path": str(jl.path),
+                    "user_hint": jl.user_hint,
+                    "sha256": artifact.sha256,
+                    "size_bytes": artifact.size_bytes,
+                    "event_count": inserted,
+                })
+            except Exception as exc:
+                log.exception("parse failed for %s", jl.path)
+                per_hive.append({
+                    "kind": "jumplist",
+                    "path": str(jl.path),
+                    "user_hint": jl.user_hint,
                     "error": f"{type(exc).__name__}: {exc}",
                 })
 
@@ -422,6 +517,17 @@ def _iso_to_ms(s: str | None) -> int | None:
     return int(dt.timestamp() * 1000)
 
 
+def _make_query_usb_devices(store: EventStore):
+    def handler(request: dict[str, Any]) -> dict[str, Any]:
+        rows = store.query_usb_devices(
+            collection_id=request.get("collection_id"),
+            limit=int(request.get("limit", 1000)),
+        )
+        return {"devices": rows, "total": len(rows)}
+
+    return handler
+
+
 def _make_query_events(store: EventStore):
     def handler(request: dict[str, Any]) -> dict[str, Any]:
         events = store.query_events(
@@ -529,6 +635,7 @@ def build_dispatcher(
     dispatcher.register("get_event", _get_event_handler)
     dispatcher.register("evaluate_rules", _make_evaluate_rules(store, rules_dir))
     dispatcher.register("query_findings", _make_query_findings(store))
+    dispatcher.register("query_usb_devices", _make_query_usb_devices(store))
     dispatcher.register(
         "query_program_execution_composite",
         _make_query_program_execution_composite(store),

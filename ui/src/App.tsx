@@ -7,7 +7,7 @@ import {
   type ColumnDef,
   type SortingState,
 } from "@tanstack/react-table";
-import { Activity, ArrowDown, ArrowUp, FolderOpen, FolderTree, Layers, ShieldAlert, Table2, X } from "lucide-react";
+import { Activity, ArrowDown, ArrowUp, FolderOpen, FolderTree, Layers, ShieldAlert, Table2, Usb, X } from "lucide-react";
 
 import { Timeline } from "@/components/Timeline";
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,7 @@ import {
   queryFindings,
   queryProgramExecutionComposite,
   queryTimeline,
+  queryUsbDevices,
   runTriageDirectory,
   runTriageHive,
   type ExecutionCompositeRow,
@@ -27,10 +28,11 @@ import {
   type ForensicEvent,
   type SidecarPong,
   type TimelinePoint,
+  type UsbDevice,
 } from "@/lib/dft";
 import { cn } from "@/lib/utils";
 
-type ViewMode = "events" | "execution" | "timeline" | "findings";
+type ViewMode = "events" | "execution" | "timeline" | "findings" | "devices";
 
 const SEVERITY_BADGE: Record<Finding["severity"], string> = {
   critical: "bg-error/20 text-error border-error/40",
@@ -253,6 +255,7 @@ export default function App() {
   const [findingsTotal, setFindingsTotal] = useState(0);
   const [findingsBySeverity, setFindingsBySeverity] = useState<Record<string, number>>({});
   const [activeSeverity, setActiveSeverity] = useState<Set<Finding["severity"]>>(new Set());
+  const [usbDevices, setUsbDevices] = useState<UsbDevice[]>([]);
 
   useEffect(() => {
     pingSidecar()
@@ -304,6 +307,22 @@ export default function App() {
           setTimelineSkippedNull(res.skipped_null_ts);
         } else {
           setSidecar({ kind: "error", message: res.error ?? "timeline query failed" });
+        }
+      } catch (err) {
+        setSidecar({ kind: "error", message: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
+    if (view === "devices") {
+      try {
+        const res = await queryUsbDevices({
+          collection_id: collection.collection_id,
+          limit: 1000,
+        });
+        if (res.ok) {
+          setUsbDevices(res.devices);
+        } else {
+          setSidecar({ kind: "error", message: res.error ?? "usb devices query failed" });
         }
       } catch (err) {
         setSidecar({ kind: "error", message: err instanceof Error ? err.message : String(err) });
@@ -501,7 +520,7 @@ export default function App() {
             DFT — Digital Forensics Triage Toolkit
           </h1>
           <span className="font-mono text-xs text-muted-foreground">
-            Phase 1 · Windows · M7
+            Phase 1 · Windows · M8
           </span>
         </div>
         <div className="flex items-center gap-3">
@@ -567,6 +586,20 @@ export default function App() {
                 </span>
               ) : null}
             </button>
+            <button
+              type="button"
+              onClick={() => setView("devices")}
+              className={cn(
+                "px-3 py-1.5 text-xs font-mono inline-flex items-center gap-1.5 border-l border-border",
+                view === "devices"
+                  ? "bg-accent text-accent-foreground"
+                  : "bg-muted/30 text-muted-foreground hover:text-foreground",
+              )}
+              disabled={!collection}
+            >
+              <Usb className="h-3 w-3" />
+              Devices
+            </button>
           </div>
           <StatusPill state={sidecar} />
           <Button onClick={openHive} disabled={sidecar.kind === "running"} size="sm">
@@ -607,7 +640,7 @@ export default function App() {
         </div>
       </div>
 
-      {view !== "execution" && collection && chipEntries.length > 0 && (
+      {view !== "execution" && view !== "devices" && collection && chipEntries.length > 0 && (
         <div className="flex flex-wrap gap-2 border-b border-border bg-muted/5 px-4 py-2">
           {chipEntries.map(([type, count]) => (
             <Chip
@@ -722,7 +755,7 @@ export default function App() {
                   }
                 }}
               />
-            ) : (
+            ) : view === "findings" ? (
               <FindingsTable
                 findings={findings}
                 hasCollection={!!collection}
@@ -747,6 +780,22 @@ export default function App() {
                   }
                 }}
               />
+            ) : (
+              <DevicesTable
+                devices={usbDevices}
+                hasCollection={!!collection}
+                onSelect={async (eventId) => {
+                  try {
+                    const res = await getEvent(eventId);
+                    if (res.ok && res.event) setSelected(res.event);
+                  } catch (err) {
+                    setSidecar({
+                      kind: "error",
+                      message: err instanceof Error ? err.message : String(err),
+                    });
+                  }
+                }}
+              />
             )}
           </div>
         </main>
@@ -755,12 +804,14 @@ export default function App() {
 
       <footer className="border-t border-border bg-muted/30 px-4 py-1 font-mono text-xs text-muted-foreground">
         {view === "events"
-          ? `events: ${events.length} of ${total} · findings: ${findingsTotal} · M7`
+          ? `events: ${events.length} of ${total} · findings: ${findingsTotal} · M8`
           : view === "execution"
-          ? `unique programs: ${execRows.length} of ${execTotal} · findings: ${findingsTotal} · M7`
+          ? `unique programs: ${execRows.length} of ${execTotal} · findings: ${findingsTotal} · M8`
           : view === "timeline"
-          ? `timeline: ${timelinePoints.length} dated points across ${timelineCategories.length} tracks (${timelineSkippedNull} undated) · findings: ${findingsTotal} · M7`
-          : `findings: ${findings.length} of ${findingsTotal} · M7`}
+          ? `timeline: ${timelinePoints.length} dated points across ${timelineCategories.length} tracks (${timelineSkippedNull} undated) · findings: ${findingsTotal} · M8`
+          : view === "findings"
+          ? `findings: ${findings.length} of ${findingsTotal} · M8`
+          : `usb devices: ${usbDevices.length} · findings: ${findingsTotal} · M8`}
       </footer>
     </div>
   );
@@ -940,6 +991,92 @@ function ExecutionTable({
             <td className="px-3 py-1.5 align-top text-right">
               {row.total_runs > 0 ? row.total_runs : "—"}
             </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function DevicesTable({
+  devices,
+  hasCollection,
+  onSelect,
+}: {
+  devices: UsbDevice[];
+  hasCollection: boolean;
+  onSelect: (eventId: string) => void;
+}) {
+  if (devices.length === 0) {
+    return (
+      <table className="w-full border-collapse text-left font-mono text-xs">
+        <tbody>
+          <tr>
+            <td className="px-3 py-16 text-center text-muted-foreground">
+              {hasCollection ? (
+                <>
+                  No USB devices in this collection. Load a SYSTEM hive to populate
+                  <span className="text-foreground"> usb_connection</span> events.
+                </>
+              ) : (
+                <>
+                  No collection loaded. Click <span className="text-foreground">Open directory…</span> to begin.
+                </>
+              )}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    );
+  }
+  return (
+    <table className="w-full border-collapse text-left font-mono text-xs">
+      <thead className="sticky top-0 bg-muted/60 backdrop-blur">
+        <tr className="border-b border-border">
+          <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground">Vendor / Product</th>
+          <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground">Friendly name</th>
+          <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground">Serial</th>
+          <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground">First installed</th>
+          <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground">Last connected</th>
+          <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground">Last removed</th>
+          <th className="px-3 py-2 font-semibold uppercase tracking-wide text-muted-foreground text-right">Events</th>
+        </tr>
+      </thead>
+      <tbody>
+        {devices.map((d) => (
+          <tr
+            key={d.serial ?? `unknown-${d.first_event_id}`}
+            className={cn(
+              "border-b border-border hover:bg-muted/40",
+              d.first_event_id ? "cursor-pointer" : "",
+            )}
+            onClick={() => d.first_event_id && onSelect(d.first_event_id)}
+          >
+            <td className="px-3 py-1.5 align-top">
+              <span className="text-foreground">{d.vendor ?? "?"}</span>
+              <span className="text-muted-foreground"> · </span>
+              <span>{d.product ?? "?"}</span>
+            </td>
+            <td className="px-3 py-1.5 align-top">
+              {d.device_name ? (
+                <span title={d.device_name}>{d.device_name}</span>
+              ) : (
+                <span className="text-muted-foreground">—</span>
+              )}
+            </td>
+            <td className="px-3 py-1.5 align-top">
+              <span className="break-all" title={d.serial ?? undefined}>
+                {d.serial ?? "—"}
+              </span>
+            </td>
+            <td className="px-3 py-1.5 align-top whitespace-nowrap text-muted-foreground">
+              {d.first_installed ?? "—"}
+            </td>
+            <td className="px-3 py-1.5 align-top whitespace-nowrap">{d.last_connected ?? "—"}</td>
+            <td className="px-3 py-1.5 align-top whitespace-nowrap text-muted-foreground">
+              {d.last_removed ?? "—"}
+            </td>
+            <td className="px-3 py-1.5 align-top text-right">{d.event_count}</td>
           </tr>
         ))}
       </tbody>
