@@ -86,10 +86,18 @@ impl Sidecar {
 async fn spawn() -> Result<Inner, SidecarError> {
     let (python, cwd) = resolve_paths();
 
+    // Bundled dft-sidecar.exe is self-contained — its argv0 already entry-points
+    // to core/__main__.py. Only the dev Python interpreter needs `-m core`.
+    let is_bundled = python
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .is_some_and(|n| n.contains("dft-sidecar"));
+
     let mut command = Command::new(&python);
+    if !is_bundled {
+        command.arg("-m").arg("core");
+    }
     command
-        .arg("-m")
-        .arg("core")
         .current_dir(&cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -118,6 +126,12 @@ async fn spawn() -> Result<Inner, SidecarError> {
 }
 
 fn resolve_paths() -> (PathBuf, PathBuf) {
+    // Resolution order, first match wins:
+    //   1. DFT_SIDECAR_PYTHON env (lets ops override anywhere)
+    //   2. dft-sidecar.exe next to the running app.exe — release / pendrive
+    //   3. .venv/Scripts/python.exe at the repo root — source-tree dev
+    // CWD analogous: DFT_SIDECAR_CWD env → app.exe parent → repo root.
+
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir
         .parent()
@@ -125,18 +139,39 @@ fn resolve_paths() -> (PathBuf, PathBuf) {
         .map(|p| p.to_path_buf())
         .unwrap_or(manifest_dir.clone());
 
-    let default_python = if cfg!(windows) {
+    let dev_python = if cfg!(windows) {
         repo_root.join(".venv").join("Scripts").join("python.exe")
     } else {
         repo_root.join(".venv").join("bin").join("python")
     };
 
-    let python = std::env::var("DFT_SIDECAR_PYTHON")
-        .map(PathBuf::from)
-        .unwrap_or(default_python);
-    let cwd = std::env::var("DFT_SIDECAR_CWD")
-        .map(PathBuf::from)
-        .unwrap_or(repo_root);
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+
+    let bundled_sidecar = exe_dir.as_ref().map(|d| {
+        if cfg!(windows) {
+            d.join("dft-sidecar").join("dft-sidecar.exe")
+        } else {
+            d.join("dft-sidecar").join("dft-sidecar")
+        }
+    });
+
+    let python = if let Ok(env_path) = std::env::var("DFT_SIDECAR_PYTHON") {
+        PathBuf::from(env_path)
+    } else if bundled_sidecar.as_ref().is_some_and(|p| p.exists()) {
+        bundled_sidecar.clone().unwrap()
+    } else {
+        dev_python.clone()
+    };
+
+    let cwd = if let Ok(env_cwd) = std::env::var("DFT_SIDECAR_CWD") {
+        PathBuf::from(env_cwd)
+    } else if let Some(d) = exe_dir.clone().filter(|_| python != dev_python) {
+        d
+    } else {
+        repo_root
+    };
 
     (python, cwd)
 }

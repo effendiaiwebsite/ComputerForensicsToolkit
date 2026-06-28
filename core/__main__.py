@@ -677,7 +677,28 @@ def _make_query_events(store: EventStore):
 
 
 def _default_rules_dir() -> Path:
-    # core/__main__.py lives at <repo>/core/, rules live at <repo>/rules/.
+    """Find the rules dir for both source-tree and PyInstaller-bundled runs.
+
+    Resolution order:
+      1. ``DFT_RULES_DIR`` env var (deployment override)
+      2. PyInstaller one-folder: ``<bundle>/rules`` next to the EXE
+      3. PyInstaller one-file: ``sys._MEIPASS/rules``
+      4. Source tree: ``<repo>/rules`` (parent of this file's package)
+    """
+    import os
+
+    env = os.environ.get("DFT_RULES_DIR")
+    if env:
+        return Path(env)
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            bundled = Path(meipass) / "rules"
+            if bundled.exists():
+                return bundled
+        sibling = Path(sys.executable).resolve().parent / "rules"
+        if sibling.exists():
+            return sibling
     return Path(__file__).resolve().parent.parent / "rules"
 
 

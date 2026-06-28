@@ -192,9 +192,30 @@ def collect_live(
     dest_root = Path(dest_dir).resolve()
     dest_root.mkdir(parents=True, exist_ok=True)
 
-    # Phase 1: probe the system hives. If none are present, abort.
+    # Pick the filesystem root that actually contains /Windows. On a live
+    # local system dissect's OS plugin mounts the system volume so target.fs
+    # works directly; on a partition-image E01 the OS plugin often doesn't
+    # auto-mount and we have to walk target.filesystems by hand.
+    root = _resolve_windows_root(target)
+    if root is None:
+        mounts = _describe_mounts(target)
+        msg = (
+            f"No Windows volume found on the image. dissect detected: {mounts or '(none)'}. "
+            f"Pick a Windows disk image, or use Live local system."
+        )
+        # Record the abort in the audit trail so the chain of custody shows
+        # we looked and found nothing, rather than silently doing zero work.
+        audit.skipped(
+            action="resolve_windows_root",
+            source_path=source_label,
+            reason=msg,
+            mounts=mounts,
+        )
+        raise NoWindowsVolumeError(msg)
+
+    # Phase 1: probe the system hives via the resolved root.
     system_specs = [
-        (spec, target.fs.path(spec.system_path), spec.system_path.lstrip("/"))
+        (spec, root.path(spec.system_path), spec.system_path.lstrip("/"))
         for spec in _SYSTEM_ARTIFACTS
     ]
     progress.update(collection_id, total=len(system_specs))
@@ -211,12 +232,12 @@ def collect_live(
         mounts = _describe_mounts(target)
         raise NoWindowsVolumeError(
             f"None of {len(_SYSTEM_ARTIFACTS)} canonical Windows system hives were "
-            f"found at the expected paths. dissect saw these mount points: "
-            f"{mounts or '(none)'}. Pick a Windows disk image, or use Live local system."
+            f"found at the expected paths. dissect detected: {mounts or '(none)'}. "
+            f"Pick a Windows disk image, or use Live local system."
         )
 
     # Phase 2: the rest of the spec list (system globs + per-user files + globs).
-    rest = list(_enumerate_user_and_glob_specs(target))
+    rest = list(_enumerate_user_and_glob_specs(target, root=root))
     progress.update(collection_id, total=len(system_specs) + len(rest))
     for spec, src_path, dest_rel in rest:
         _process_one(
@@ -279,24 +300,86 @@ def _process_one(
         progress.update(collection_id, completed_delta=1)
 
 
-def _describe_mounts(target: Any) -> str:
-    """Best-effort: list dissect's mount points so the user can see what it saw."""
-    out: list[str] = []
+class _FsRoot:
+    """Wraps either ``target.fs`` or a single ``Filesystem`` so callers can
+    use a uniform ``.path("/Windows/...")`` regardless of whether dissect's
+    OS plugin auto-mounted the volume.
+    """
+
+    def __init__(self, inner: Any, label: str) -> None:
+        self._inner = inner
+        self.label = label
+
+    def path(self, p: str) -> Any:
+        return self._inner.path(p)
+
+
+def _resolve_windows_root(target: Any) -> _FsRoot | None:
+    """Find the filesystem (or mounted root) that contains /Windows.
+
+    Tries in order:
+      1. ``target.fs`` (works when the OS plugin mounted the system volume)
+      2. each filesystem in ``target.filesystems`` directly
+    Returns ``None`` if no filesystem exposes ``/Windows`` — caller decides
+    how to report.
+    """
+    probe = "/Windows"
     try:
-        for fs in getattr(target, "filesystems", []) or []:
-            mp = getattr(fs, "mountpoints", None) or [getattr(fs, "path", None)]
-            for m in mp:
-                if m:
-                    out.append(str(m))
+        p = target.fs.path(probe)
+        if p.exists() and p.is_dir():
+            return _FsRoot(target.fs, "target.fs")
     except Exception:  # noqa: BLE001
         pass
-    return ", ".join(sorted(set(out)))
+
+    for i, fs in enumerate(getattr(target, "filesystems", []) or []):
+        try:
+            p = fs.path(probe)
+            if p.exists() and p.is_dir():
+                return _FsRoot(fs, f"filesystems[{i}] {getattr(fs, '__type__', type(fs).__name__)}")
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def _describe_mounts(target: Any) -> str:
+    """Best-effort: list what dissect actually saw on the image.
+
+    Reports target.fs.mounts (the OS-plugin mount table) when populated; if
+    empty, falls back to listing each raw filesystem with its type and the
+    top-level entries it exposes.
+    """
+    pieces: list[str] = []
+    try:
+        mounts = getattr(getattr(target, "fs", None), "mounts", None)
+        if isinstance(mounts, dict) and mounts:
+            for mp, fs in mounts.items():
+                fs_type = getattr(fs, "__type__", type(fs).__name__)
+                pieces.append(f"{mp!s} ({fs_type})")
+    except Exception:  # noqa: BLE001
+        pass
+    if not pieces:
+        try:
+            for i, fs in enumerate(getattr(target, "filesystems", []) or []):
+                fs_type = getattr(fs, "__type__", type(fs).__name__)
+                try:
+                    root_entries = sorted(e.name for e in fs.path("/").iterdir())[:8]
+                    sample = ", ".join(root_entries) or "(empty root)"
+                except Exception:  # noqa: BLE001
+                    sample = "(unreadable root)"
+                pieces.append(f"filesystems[{i}] type={fs_type} root=[{sample}]")
+        except Exception:  # noqa: BLE001
+            pass
+    return "; ".join(pieces)
 
 
 # ---------- spec → concrete (src_path, dest_path) pairs ---------------------
 
 
-def _enumerate_user_and_glob_specs(target: Any) -> Iterator[tuple[ArtifactSpec, Any, str]]:
+def _enumerate_user_and_glob_specs(
+    target: Any,
+    *,
+    root: _FsRoot,
+) -> Iterator[tuple[ArtifactSpec, Any, str]]:
     """Materialize all ArtifactSpecs except the system single-file hives.
 
     Called only after Phase 1 has confirmed at least one system hive landed,
@@ -306,14 +389,14 @@ def _enumerate_user_and_glob_specs(target: Any) -> Iterator[tuple[ArtifactSpec, 
     # System-wide globbed dirs — copy every regular file under them.
     for spec in _SYSTEM_GLOBS:
         assert spec.system_path is not None
-        root = target.fs.path(spec.system_path)
-        for entry in _iter_files(root):
-            rel = _relativize(entry, root)
+        glob_root = root.path(spec.system_path)
+        for entry in _iter_files(glob_root):
+            rel = _relativize(entry, glob_root)
             dest_rel = spec.system_path.lstrip("/") + "/" + rel
             yield spec, entry, dest_rel
 
     # Per-user artifacts.
-    for user in _iter_users(target):
+    for user in _iter_users(target, root=root):
         home = user["home"]
         if home is None:
             continue
@@ -321,25 +404,25 @@ def _enumerate_user_and_glob_specs(target: Any) -> Iterator[tuple[ArtifactSpec, 
 
         for spec in _USER_ARTIFACTS:
             assert spec.user_relative is not None
-            src = target.fs.path(f"{home}/{spec.user_relative}")
+            src = root.path(f"{home}/{spec.user_relative}")
             dest_rel = f"{user_dest_root}/{spec.user_relative}"
             yield spec, src, dest_rel
 
         for spec in _USER_GLOBS:
             assert spec.user_relative is not None
-            root = target.fs.path(f"{home}/{spec.user_relative}")
-            for entry in _iter_files(root):
-                rel = _relativize(entry, root)
+            glob_root = root.path(f"{home}/{spec.user_relative}")
+            for entry in _iter_files(glob_root):
+                rel = _relativize(entry, glob_root)
                 dest_rel = f"{user_dest_root}/{spec.user_relative}/{rel}"
                 yield spec, entry, dest_rel
 
 
-def _iter_users(target: Any) -> Iterator[dict[str, Any]]:
+def _iter_users(target: Any, *, root: "_FsRoot | None" = None) -> Iterator[dict[str, Any]]:
     """Yield ``{name, home}`` per user.
 
     Prefers ``target.user_details.all()`` (rich plugin output); falls back
-    to walking ``/Users`` directly if the plugin isn't available (which
-    happens on minimal fake targets we use in tests).
+    to walking ``/Users`` on the resolved root FS — which matters for
+    partition-image E01s where the OS plugin didn't auto-mount.
     """
     try:
         for ud in target.user_details.all():
@@ -351,8 +434,9 @@ def _iter_users(target: Any) -> Iterator[dict[str, Any]]:
     except (AttributeError, Exception):  # noqa: BLE001 — fall through deliberately
         pass
 
+    fs = root if root is not None else _FsRoot(getattr(target, "fs", None), "target.fs")
     try:
-        users_dir = target.fs.path("/Users")
+        users_dir = fs.path("/Users")
         if users_dir.exists() and users_dir.is_dir():
             for entry in users_dir.iterdir():
                 if entry.is_dir() and entry.name.lower() not in {"public", "default", "default user", "all users"}:

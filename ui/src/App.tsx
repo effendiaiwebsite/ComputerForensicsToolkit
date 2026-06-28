@@ -11,6 +11,7 @@ import { Activity, AlertTriangle, ArrowDown, ArrowUp, FileText, FolderOpen, Fold
 
 import { DetailPane } from "@/components/DetailPane";
 import { Timeline } from "@/components/Timeline";
+import { Welcome } from "@/components/Welcome";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -657,13 +658,11 @@ export default function App() {
           </Button>
           <Button
             onClick={() => setLiveOpen(true)}
-            disabled={
-              sidecar.kind === "running" || !elevated || liveProgress?.phase === "running"
-            }
+            disabled={sidecar.kind === "running" || liveProgress?.phase === "running"}
             size="sm"
             title={
               elevated === false
-                ? "Live disk collection requires administrator privileges — relaunch as admin."
+                ? "Image files work without admin; physical drives require administrator."
                 : "Collect artifacts from a live physical drive or disk image"
             }
           >
@@ -677,9 +676,9 @@ export default function App() {
         <div className="flex items-center gap-2 border-b border-warning/40 bg-warning/10 px-4 py-1.5 font-mono text-xs text-warning">
           <AlertTriangle className="h-3.5 w-3.5" />
           <span>
-            Running without administrator privileges. Hive / directory triage works; live disk
-            collection is disabled. Relaunch as administrator to enable{" "}
-            <span className="font-semibold">Collect live…</span>.
+            Running without administrator privileges. Hive / directory triage and disk-image
+            ingest work; physical-drive enumeration (live system) requires admin. Relaunch as
+            administrator to read <span className="font-mono">\\.\PhysicalDriveN</span>.
           </span>
         </div>
       )}
@@ -761,7 +760,14 @@ export default function App() {
       <div className="flex flex-1 overflow-hidden">
         <main className="flex-1 overflow-hidden">
           <div className="h-full overflow-auto">
-            {view === "events" ? (
+            {!collection ? (
+              <Welcome
+                elevated={elevated}
+                onOpenHive={openHive}
+                onOpenDirectory={openDirectory}
+                onCollectLive={() => setLiveOpen(true)}
+              />
+            ) : view === "events" ? (
               <table className="w-full border-collapse text-left font-mono text-xs">
                 <thead className="sticky top-0 bg-muted/60 backdrop-blur">
                   {table.getHeaderGroups().map((hg) => (

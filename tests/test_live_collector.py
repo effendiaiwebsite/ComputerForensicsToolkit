@@ -232,7 +232,10 @@ def test_no_windows_volume_raises_early(tmp_path: Path) -> None:
     progress.start("c", label="t", total=0)
 
     target = FakeTarget(src_root, [])
-    with pytest.raises(NoWindowsVolumeError, match="canonical Windows system hives"):
+    # _resolve_windows_root catches the missing /Windows dir up front (one audit
+    # entry); the legacy post-probe path (five skipped specs) still applies
+    # whenever /Windows is present but the SYSTEM/SOFTWARE/etc. hives aren't.
+    with pytest.raises(NoWindowsVolumeError, match="(No Windows volume|canonical Windows system hives)"):
         collect_live(
             target,
             collection_id="c",
@@ -242,10 +245,13 @@ def test_no_windows_volume_raises_early(tmp_path: Path) -> None:
             source_label="fake://linux",
         )
 
-    # All 5 system hives recorded as skipped; nothing further attempted.
+    # One audit record for the resolve_windows_root abort — the audit trail
+    # shows we looked and found no Windows volume, instead of silently doing
+    # zero work and leaving the examiner wondering.
     records = audit.read_all()
-    assert len(records) == 5
-    assert all(r["status"] == "skipped" for r in records)
+    assert len(records) == 1
+    assert records[0]["action"] == "resolve_windows_root"
+    assert records[0]["status"] == "skipped"
 
 
 def test_enumerate_drives_non_windows_returns_empty(monkeypatch) -> None:
