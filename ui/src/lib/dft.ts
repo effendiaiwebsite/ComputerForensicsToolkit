@@ -293,6 +293,83 @@ export async function getProgress(collectionId: string): Promise<ProgressResult>
   return invoke<ProgressResult>("get_progress", { collectionId });
 }
 
+export type FileEntry = {
+  name: string;
+  kind: "dir" | "file" | "symlink" | "junction" | "other";
+  size: number | null;
+  mtime: string | null;
+  hidden: boolean;
+};
+
+export type ListDirResult = {
+  ok: boolean;
+  path: string;
+  parent: string | null;
+  source_kind: "directory" | "image" | "device" | "unknown";
+  source_path: string;
+  entries: FileEntry[];
+  error?: string;
+};
+
+export async function listDir(args: {
+  collection_id: string;
+  path: string;
+}): Promise<ListDirResult> {
+  return invoke<ListDirResult>("list_dir", { args });
+}
+
+export type ExportFolderResult = {
+  ok: boolean;
+  progress_key: string;
+  collection_id: string;
+  src_path: string;
+  dest_dir: string;
+  phase: string;
+  error?: string;
+};
+
+export async function exportFolder(args: {
+  collection_id: string;
+  src_path: string;
+  dest_dir: string;
+}): Promise<ExportFolderResult> {
+  return invoke<ExportFolderResult>("export_folder", { args });
+}
+
+export type HashReportResult = {
+  ok: boolean;
+  audit_path: string;
+  output_path: string;
+  format: "txt" | "csv";
+  rows: number;
+  size_bytes: number;
+  error?: string;
+};
+
+export async function exportHashReport(args: {
+  audit_path: string;
+  output_path: string;
+  format?: "txt" | "csv";
+}): Promise<HashReportResult> {
+  return invoke<HashReportResult>("export_hash_report", { args });
+}
+
+export type ExportEventsResult = {
+  ok: boolean;
+  output_path: string;
+  format: "csv" | "ndjson";
+  rows: number;
+  size_bytes: number;
+  error?: string;
+};
+
+export async function exportEvents(args: QueryEventsArgs & {
+  output_path: string;
+  format?: "csv" | "ndjson";
+}): Promise<ExportEventsResult> {
+  return invoke<ExportEventsResult>("export_events", { args });
+}
+
 export type GetEventResult = {
   ok: boolean;
   event?: ForensicEvent;

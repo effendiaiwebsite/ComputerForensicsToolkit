@@ -291,6 +291,7 @@ def _make_run_triage_directory(store: EventStore):
                 host_os="windows",
                 created_at=_utc_now_iso(),
                 note=f"directory triage: {dir_path}",
+                source_path=dir_path,
             )
 
         per_hive: list[dict[str, Any]] = []
@@ -773,6 +774,206 @@ def _make_enumerate_drives():
     return handler
 
 
+def _make_export_events(store: EventStore):
+    def handler(request: dict[str, Any]) -> dict[str, Any]:
+        import csv
+        import json as _json
+
+        output_path = request.get("output_path")
+        fmt = (request.get("format") or "csv").lower()
+        if not isinstance(output_path, str) or not output_path:
+            return {"ok": False, "error": "missing 'output_path' string"}
+        if fmt not in ("csv", "ndjson"):
+            return {"ok": False, "error": "format must be 'csv' or 'ndjson'"}
+
+        rows = store.query_events(
+            collection_id=request.get("collection_id"),
+            event_type=request.get("event_type"),
+            event_types=request.get("event_types"),
+            source_artifact=request.get("source_artifact"),
+            source_artifacts=request.get("source_artifacts"),
+            summary_contains=request.get("summary_contains"),
+            sort_by=request.get("sort_by", "timestamp"),
+            sort_dir=request.get("sort_dir", "asc"),
+            limit=int(request.get("limit", 1_000_000)),
+            offset=int(request.get("offset", 0)),
+        )
+        out = Path(output_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if fmt == "csv":
+            cols = [
+                "event_id", "timestamp", "timestamp_source", "host_id", "user",
+                "source_artifact", "source_path", "event_type", "summary",
+                "evidence_json", "parser_version",
+            ]
+            with out.open("w", encoding="utf-8", newline="") as fh:
+                w = csv.writer(fh)
+                w.writerow(cols)
+                for r in rows:
+                    w.writerow([
+                        r.get("event_id"),
+                        r.get("timestamp"),
+                        r.get("timestamp_source"),
+                        r.get("host_id"),
+                        r.get("user"),
+                        r.get("source_artifact"),
+                        r.get("source_path"),
+                        r.get("event_type"),
+                        r.get("summary"),
+                        _json.dumps(r.get("evidence", {}), separators=(",", ":"), default=str),
+                        r.get("parser_version"),
+                    ])
+        else:  # ndjson
+            with out.open("w", encoding="utf-8") as fh:
+                for r in rows:
+                    fh.write(_json.dumps(r, separators=(",", ":"), default=str))
+                    fh.write("\n")
+        return {
+            "output_path": str(out),
+            "format": fmt,
+            "rows": len(rows),
+            "size_bytes": out.stat().st_size,
+        }
+
+    return handler
+
+
+def _make_export_hash_report():
+    def handler(request: dict[str, Any]) -> dict[str, Any]:
+        from core.audit import generate_hash_report
+
+        audit_path = request.get("audit_path")
+        output_path = request.get("output_path")
+        fmt = (request.get("format") or "txt").lower()
+        if not isinstance(audit_path, str) or not audit_path:
+            return {"ok": False, "error": "missing 'audit_path' string"}
+        if not isinstance(output_path, str) or not output_path:
+            return {"ok": False, "error": "missing 'output_path' string"}
+        if fmt not in ("txt", "csv"):
+            return {"ok": False, "error": "format must be 'txt' or 'csv'"}
+        try:
+            rows, total_bytes = generate_hash_report(audit_path, output_path, format=fmt)
+        except FileNotFoundError as exc:
+            return {"ok": False, "error": str(exc)}
+        except Exception as exc:
+            log.exception("hash report failed")
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {
+            "audit_path": audit_path,
+            "output_path": output_path,
+            "format": fmt,
+            "rows": rows,
+            "size_bytes": total_bytes,
+        }
+
+    return handler
+
+
+def _make_export_folder(store: EventStore, browser, progress):
+    import threading
+    from pathlib import Path as _Path
+
+    def handler(request: dict[str, Any]) -> dict[str, Any]:
+        cid = request.get("collection_id")
+        src_path = request.get("src_path") or "/"
+        dest_dir = request.get("dest_dir")
+        if not isinstance(cid, str) or not cid:
+            return {"ok": False, "error": "missing 'collection_id' string"}
+        if not isinstance(dest_dir, str) or not dest_dir:
+            return {"ok": False, "error": "missing 'dest_dir' string"}
+        coll = store.get_collection(cid)
+        if coll is None:
+            return {"ok": False, "error": "unknown collection_id"}
+        source_path = coll.get("source_path") or ""
+        if not source_path:
+            return {
+                "ok": False,
+                "error": "collection has no source_path; re-ingest to populate it",
+            }
+
+        # Separate progress key per export so it doesn't collide with the
+        # parent collection's own progress snapshot.
+        progress_key = f"export-{uuid.uuid4()}"
+        progress.start(
+            progress_key,
+            label=f"exporting {src_path} → {dest_dir}",
+            total=0,
+        )
+
+        def _worker() -> None:
+            from core.audit import AuditLog
+            from core.image_browser import export_folder
+
+            dest_root = _Path(dest_dir).resolve()
+            audit = AuditLog(dest_root / "audit.jsonl")
+            try:
+                export_folder(
+                    browser,
+                    collection_id=cid,
+                    src_path=src_path,
+                    dest_dir=dest_root,
+                    source_path=source_path,
+                    audit=audit,
+                    progress=progress,
+                    progress_key=progress_key,
+                )
+                progress.finish(progress_key)
+            except Exception as exc:
+                logger = logging.getLogger(__name__)
+                logger.exception("folder export failed")
+                audit.error("export_folder", src_path, exc)
+                progress.finish(progress_key, error=f"{type(exc).__name__}: {exc}")
+
+        threading.Thread(target=_worker, name=f"export-{progress_key}", daemon=True).start()
+        return {
+            "progress_key": progress_key,
+            "collection_id": cid,
+            "src_path": src_path,
+            "dest_dir": dest_dir,
+            "phase": "running",
+        }
+
+    return handler
+
+
+def _make_list_dir(store: EventStore, browser):
+    def handler(request: dict[str, Any]) -> dict[str, Any]:
+        cid = request.get("collection_id")
+        path = request.get("path") or "/"
+        if not isinstance(cid, str) or not cid:
+            return {"ok": False, "error": "missing 'collection_id' string"}
+        coll = store.get_collection(cid)
+        if coll is None:
+            return {"ok": False, "error": "unknown collection_id"}
+        src = coll.get("source_path") or ""
+        if not src:
+            return {
+                "ok": False,
+                "error": (
+                    "collection has no source_path on record. Re-ingest with the "
+                    "current build to populate it."
+                ),
+            }
+        try:
+            result = browser.list_dir(collection_id=cid, path=path, source_path=src)
+        except FileNotFoundError as exc:
+            return {"ok": False, "error": str(exc)}
+        except PermissionError as exc:
+            return {"ok": False, "error": str(exc)}
+        except Exception as exc:
+            log.exception("list_dir failed for %s @ %s", cid, path)
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {
+            "path": result.path,
+            "parent": result.parent,
+            "source_kind": result.source_kind,
+            "source_path": result.source_path,
+            "entries": [e.to_dict() for e in result.entries],
+        }
+
+    return handler
+
+
 def _make_get_progress(progress):
     def handler(request: dict[str, Any]) -> dict[str, Any]:
         cid = request.get("collection_id")
@@ -833,6 +1034,7 @@ def _make_run_live_collection(store: EventStore, progress, rules_dir: Path):
                     host_os="windows",
                     created_at=_utc_now_iso(),
                     note=f"live: {drive} → {dest_root}",
+                    source_path=drive,
                 )
                 # Reuse the existing directory-triage dispatcher so we don't duplicate logic.
                 # Pass our collection_id so all events land under the same ID the UI is polling.
@@ -874,12 +1076,15 @@ def build_dispatcher(
     *,
     rules_dir: Path | None = None,
     progress=None,
+    browser=None,
 ) -> Dispatcher:
+    from core.image_browser import ImageBrowser
     from core.progress import ProgressTracker
 
     store = store or EventStore()
     rules_dir = rules_dir or _default_rules_dir()
     progress = progress or ProgressTracker()
+    browser = browser or ImageBrowser()
     dispatcher = Dispatcher()
     dispatcher.register("ping", _ping)
     dispatcher.register("run_triage_system_hive", _make_run_triage_system_hive(store))
@@ -913,6 +1118,10 @@ def build_dispatcher(
         "run_live_collection",
         _make_run_live_collection(store, progress, rules_dir),
     )
+    dispatcher.register("list_dir", _make_list_dir(store, browser))
+    dispatcher.register("export_folder", _make_export_folder(store, browser, progress))
+    dispatcher.register("export_hash_report", _make_export_hash_report())
+    dispatcher.register("export_events", _make_export_events(store))
     return dispatcher
 
 

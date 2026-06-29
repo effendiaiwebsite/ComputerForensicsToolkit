@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS collections (
     host_id       TEXT NOT NULL,
     host_os       TEXT NOT NULL,
     created_at    TEXT NOT NULL,
-    note          TEXT
+    note          TEXT,
+    source_path   TEXT  -- live: '\\.\PhysicalDriveN' or '<file>.E01'; directory triage: dir
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -114,16 +115,25 @@ class EventStore:
         host_os: str,
         created_at: str,
         note: str | None = None,
+        source_path: str | None = None,
     ) -> None:
         self._conn.execute(
-            "INSERT OR REPLACE INTO collections(collection_id, host_id, host_os, created_at, note) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (collection_id, host_id, host_os, created_at, note),
+            "INSERT OR REPLACE INTO collections(collection_id, host_id, host_os, created_at, note, source_path) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (collection_id, host_id, host_os, created_at, note, source_path),
+        )
+
+    def set_collection_source(self, collection_id: str, source_path: str) -> None:
+        """Update the source_path of an existing collection (e.g. after directory
+        triage discovers it under a parent we want the Files tab to root from)."""
+        self._conn.execute(
+            "UPDATE collections SET source_path = ? WHERE collection_id = ?",
+            (source_path, collection_id),
         )
 
     def get_collection(self, collection_id: str) -> dict[str, Any] | None:
         row = self._conn.execute(
-            "SELECT collection_id, host_id, host_os, created_at, note "
+            "SELECT collection_id, host_id, host_os, created_at, note, source_path "
             "FROM collections WHERE collection_id = ?",
             (collection_id,),
         ).fetchone()

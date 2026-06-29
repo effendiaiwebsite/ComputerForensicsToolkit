@@ -181,6 +181,50 @@ fn is_elevated() -> bool {
     elevation::is_elevated()
 }
 
+#[tauri::command]
+async fn list_dir(
+    sidecar: State<'_, Sidecar>,
+    args: Value,
+) -> Result<Value, String> {
+    sidecar
+        .request("list_dir", args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn export_folder(
+    sidecar: State<'_, Sidecar>,
+    args: Value,
+) -> Result<Value, String> {
+    sidecar
+        .request("export_folder", args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn export_hash_report(
+    sidecar: State<'_, Sidecar>,
+    args: Value,
+) -> Result<Value, String> {
+    sidecar
+        .request("export_hash_report", args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn export_events(
+    sidecar: State<'_, Sidecar>,
+    args: Value,
+) -> Result<Value, String> {
+    sidecar
+        .request("export_events", args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -214,6 +258,10 @@ pub fn run() {
             run_live_collection,
             get_progress,
             is_elevated,
+            list_dir,
+            export_folder,
+            export_hash_report,
+            export_events,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

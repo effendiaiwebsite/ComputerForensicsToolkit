@@ -7,9 +7,10 @@ import {
   type ColumnDef,
   type SortingState,
 } from "@tanstack/react-table";
-import { Activity, AlertTriangle, ArrowDown, ArrowUp, FileText, FolderOpen, FolderTree, Globe, HardDrive, Layers, ShieldAlert, Table2, Usb, X } from "lucide-react";
+import { Activity, AlertTriangle, ArrowDown, ArrowUp, FileText, Files, FolderOpen, FolderTree, Globe, HardDrive, Layers, ShieldAlert, Table2, Usb, X } from "lucide-react";
 
 import { DetailPane } from "@/components/DetailPane";
+import { FilesBrowser } from "@/components/FilesBrowser";
 import { Timeline } from "@/components/Timeline";
 import { Welcome } from "@/components/Welcome";
 import { Button } from "@/components/ui/button";
@@ -17,6 +18,7 @@ import { Input } from "@/components/ui/input";
 import {
   enumerateDrives,
   evaluateRules,
+  exportEvents,
   generateReport,
   getEvent,
   getProgress,
@@ -43,7 +45,7 @@ import {
 } from "@/lib/dft";
 import { cn } from "@/lib/utils";
 
-type ViewMode = "events" | "execution" | "timeline" | "findings" | "devices" | "browser";
+type ViewMode = "events" | "execution" | "timeline" | "findings" | "devices" | "browser" | "files";
 
 const SEVERITY_BADGE: Record<Finding["severity"], string> = {
   critical: "bg-error/20 text-error border-error/40",
@@ -514,6 +516,38 @@ export default function App() {
     });
   }
 
+  async function exportCurrentEventView(fmt: "csv" | "ndjson") {
+    if (!collection) return;
+    try {
+      const sel = await saveDialog({
+        title: `Export Events view as ${fmt.toUpperCase()}`,
+        defaultPath: `dft-events.${fmt}`,
+        filters: fmt === "csv"
+          ? [{ name: "CSV", extensions: ["csv"] }]
+          : [{ name: "NDJSON", extensions: ["ndjson", "jsonl"] }],
+      });
+      if (typeof sel !== "string" || !sel) return;
+      const sortCol = sorting[0]?.id;
+      const sort_by = sortCol && SORTABLE_COLS.has(sortCol) ? (sortCol as never) : "timestamp";
+      const sort_dir = sorting[0]?.desc ? "desc" : "asc";
+      const res = await exportEvents({
+        collection_id: collection.collection_id,
+        summary_contains: debouncedFilter || undefined,
+        event_types: activeTypes.size ? Array.from(activeTypes) : undefined,
+        sort_by,
+        sort_dir,
+        limit: 1_000_000,
+        output_path: sel,
+        format: fmt,
+      });
+      if (!res.ok) {
+        setSidecar({ kind: "error", message: res.error ?? "event export failed" });
+      }
+    } catch (err) {
+      setSidecar({ kind: "error", message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
   const table = useReactTable({
     data: events,
     columns,
@@ -532,17 +566,57 @@ export default function App() {
 
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
-      <header className="flex items-center justify-between gap-3 border-b border-border bg-muted/30 px-4 py-2">
-        <div className="flex items-baseline gap-3">
-          <h1 className="font-mono text-sm font-semibold tracking-tight">
-            DFT — Digital Forensics Triage Toolkit
-          </h1>
-          <span className="font-mono text-xs text-muted-foreground">
-            Phase 1 · Windows · M9
-          </span>
+      <header className="flex flex-col border-b border-border bg-muted/30">
+        <div className="flex items-center justify-between gap-3 px-4 py-2">
+          <div className="flex items-baseline gap-3 min-w-0">
+            <h1 className="font-mono text-sm font-semibold tracking-tight whitespace-nowrap">
+              DFT — Digital Forensics Triage Toolkit
+            </h1>
+            <span className="font-mono text-xs text-muted-foreground whitespace-nowrap">
+              Phase 1 · Windows · M14
+            </span>
+          </div>
+          <div className="flex items-center gap-3 shrink-0">
+            <StatusPill state={sidecar} />
+            <Button onClick={openHive} disabled={sidecar.kind === "running"} size="sm">
+              <FolderOpen className="h-4 w-4" />
+              Open hive…
+            </Button>
+            <Button
+              onClick={openDirectory}
+              disabled={sidecar.kind === "running"}
+              size="sm"
+              variant="secondary"
+            >
+              <FolderTree className="h-4 w-4" />
+              Open directory…
+            </Button>
+            <Button
+              onClick={() => setReportOpen(true)}
+              disabled={sidecar.kind === "running" || !collection}
+              size="sm"
+              variant="secondary"
+            >
+              <FileText className="h-4 w-4" />
+              Generate report…
+            </Button>
+            <Button
+              onClick={() => setLiveOpen(true)}
+              disabled={sidecar.kind === "running" || liveProgress?.phase === "running"}
+              size="sm"
+              title={
+                elevated === false
+                  ? "Image files work without admin; physical drives require administrator."
+                  : "Collect artifacts from a live physical drive or disk image"
+              }
+            >
+              <HardDrive className="h-4 w-4" />
+              Collect live…
+            </Button>
+          </div>
         </div>
-        <div className="flex items-center gap-3">
-          <div className="flex rounded-md border border-border overflow-hidden">
+        <div className="flex items-center gap-2 px-4 pb-2 overflow-x-auto">
+          <div className="flex rounded-md border border-border overflow-hidden shrink-0">
             <button
               type="button"
               onClick={() => setView("events")}
@@ -632,43 +706,21 @@ export default function App() {
               <Globe className="h-3 w-3" />
               Browser
             </button>
+            <button
+              type="button"
+              onClick={() => setView("files")}
+              className={cn(
+                "px-3 py-1.5 text-xs font-mono inline-flex items-center gap-1.5 border-l border-border",
+                view === "files"
+                  ? "bg-accent text-accent-foreground"
+                  : "bg-muted/30 text-muted-foreground hover:text-foreground",
+              )}
+              disabled={!collection}
+            >
+              <Files className="h-3 w-3" />
+              Files
+            </button>
           </div>
-          <StatusPill state={sidecar} />
-          <Button onClick={openHive} disabled={sidecar.kind === "running"} size="sm">
-            <FolderOpen className="h-4 w-4" />
-            Open hive…
-          </Button>
-          <Button
-            onClick={openDirectory}
-            disabled={sidecar.kind === "running"}
-            size="sm"
-            variant="secondary"
-          >
-            <FolderTree className="h-4 w-4" />
-            Open directory…
-          </Button>
-          <Button
-            onClick={() => setReportOpen(true)}
-            disabled={sidecar.kind === "running" || !collection}
-            size="sm"
-            variant="secondary"
-          >
-            <FileText className="h-4 w-4" />
-            Generate report…
-          </Button>
-          <Button
-            onClick={() => setLiveOpen(true)}
-            disabled={sidecar.kind === "running" || liveProgress?.phase === "running"}
-            size="sm"
-            title={
-              elevated === false
-                ? "Image files work without admin; physical drives require administrator."
-                : "Collect artifacts from a live physical drive or disk image"
-            }
-          >
-            <HardDrive className="h-4 w-4" />
-            Collect live…
-          </Button>
         </div>
       </header>
 
@@ -734,7 +786,7 @@ export default function App() {
         </div>
       </div>
 
-      {view !== "execution" && view !== "devices" && view !== "browser" && collection && chipEntries.length > 0 && (
+      {view !== "execution" && view !== "devices" && view !== "browser" && view !== "files" && collection && chipEntries.length > 0 && (
         <div className="flex flex-wrap gap-2 border-b border-border bg-muted/5 px-4 py-2">
           {chipEntries.map(([type, count]) => (
             <Chip
@@ -753,6 +805,27 @@ export default function App() {
             >
               clear
             </button>
+          )}
+          {view === "events" && (
+            <div className="ml-auto flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => void exportCurrentEventView("csv")}
+                className="text-xs font-mono text-muted-foreground underline hover:text-foreground"
+                title="Export the currently-filtered Events view as CSV"
+              >
+                export csv
+              </button>
+              <span className="text-muted-foreground">·</span>
+              <button
+                type="button"
+                onClick={() => void exportCurrentEventView("ndjson")}
+                className="text-xs font-mono text-muted-foreground underline hover:text-foreground"
+                title="Export the currently-filtered Events view as NDJSON (one JSON object per line)"
+              >
+                ndjson
+              </button>
+            </div>
           )}
         </div>
       )}
@@ -897,8 +970,13 @@ export default function App() {
                   }
                 }}
               />
-            ) : (
+            ) : view === "browser" ? (
               <BrowserTable domains={browserDomains} hasCollection={!!collection} />
+            ) : (
+              <FilesBrowser
+                collectionId={collection?.collection_id ?? null}
+                onError={(msg) => setSidecar({ kind: "error", message: msg })}
+              />
             )}
           </div>
         </main>
@@ -915,8 +993,10 @@ export default function App() {
           : view === "findings"
           ? `findings: ${findings.length} of ${findingsTotal} · M9`
           : view === "devices"
-          ? `usb devices: ${usbDevices.length} · findings: ${findingsTotal} · M9`
-          : `browser hosts: ${browserDomains.length} · findings: ${findingsTotal} · M9`}
+          ? `usb devices: ${usbDevices.length} · findings: ${findingsTotal} · M14`
+          : view === "browser"
+          ? `browser hosts: ${browserDomains.length} · findings: ${findingsTotal} · M14`
+          : `image filesystem browser · M14`}
       </footer>
     </div>
   );
