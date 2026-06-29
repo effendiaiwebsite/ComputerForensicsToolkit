@@ -54,8 +54,11 @@ def parse_sam_hive(
         decoded_name, decoded_full = _decode_account_v(hive, entry.get("key_path"))
         username = decoded_name or entry.get("username") or f"RID {rid}"
         sid = f"{machine_sid}-{rid}" if machine_sid and rid is not None else None
-        last_logon = entry.get("last_logon")
+        # regipy's key names: last_login / last_failed_login / failed_login_count,
+        # and the account state lives in account_flags_parsed (a list of strings).
+        last_logon = entry.get("last_login")
         password_last_set = entry.get("password_last_set")
+        flags = [str(f).lower() for f in (entry.get("account_flags_parsed") or [])]
         events.append(
             make_event(
                 host_os=HOST_OS,
@@ -71,13 +74,14 @@ def parse_sam_hive(
                     "sid": sid,
                     "machine_sid": machine_sid,
                     "full_name": decoded_full or entry.get("full_name"),
-                    "comment": entry.get("comment"),
-                    "account_disabled": entry.get("account_disabled"),
-                    "account_locked": entry.get("account_locked"),
-                    "password_required": entry.get("password_required"),
+                    "account_disabled": any("disabled" in f for f in flags),
+                    "account_locked": any("lock" in f for f in flags),
+                    "password_required": not any("password not required" in f for f in flags),
+                    "account_flags": entry.get("account_flags_parsed"),
                     "password_last_set": password_last_set,
                     "last_logon": last_logon,
-                    "last_password_failure": entry.get("last_password_failure"),
+                    "last_failed_login": entry.get("last_failed_login"),
+                    "failed_login_count": entry.get("failed_login_count"),
                     "login_count": entry.get("login_count"),
                     "key_path": entry.get("key_path"),
                 },

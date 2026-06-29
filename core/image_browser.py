@@ -231,7 +231,7 @@ class ImageBrowser:
                 kind=entry_kind,
                 size=size,
                 mtime=mtime,
-                hidden=_is_hidden_name(name),
+                hidden=_entry_hidden(child, name),
             ))
         entries.sort(key=lambda e: (e.kind not in ("dir", "junction"), e.name.lower()))
         return ListDirResult(
@@ -283,6 +283,33 @@ def _is_hidden_name(name: str) -> bool:
     if name.startswith("."):
         return True
     return any(name.startswith(p) for p in _WINDOWS_HIDDEN_PREFIXES)
+
+
+_FILE_ATTRIBUTE_HIDDEN = 0x2
+
+
+def _entry_hidden(child: Any, name: str) -> bool:
+    """True if the entry carries the NTFS FILE_ATTRIBUTE_HIDDEN bit.
+
+    Reads ``$STANDARD_INFORMATION.file_attributes`` from the dissect.ntfs MFT
+    record (the path-level ``stat()`` doesn't expose it). Falls back to the
+    name heuristic for non-NTFS sources or if the attribute can't be read — so
+    e.g. ``desktop.ini`` (hidden by attribute, not by name) is counted.
+    """
+    try:
+        from dissect.ntfs.c_ntfs import ATTRIBUTE_TYPE_CODE
+
+        mft = child.get().entry
+        si = mft.attributes.get(ATTRIBUTE_TYPE_CODE.STANDARD_INFORMATION)
+        if si is not None:
+            attrs = si if isinstance(si, list) else [si]
+            for a in attrs:
+                fa = getattr(a, "file_attributes", None)
+                if fa is not None:
+                    return bool(int(fa) & _FILE_ATTRIBUTE_HIDDEN)
+    except Exception:  # noqa: BLE001 — not NTFS, or attribute unavailable
+        pass
+    return _is_hidden_name(name)
 
 
 def _safe_iterdir(node: Any) -> Iterator[Any]:

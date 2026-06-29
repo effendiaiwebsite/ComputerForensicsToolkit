@@ -9,8 +9,48 @@ from pathlib import Path
 import pytest
 
 from core.audit import AuditLog
-from core.image_browser import ImageBrowser, export_folder
+from core.image_browser import ImageBrowser, _entry_hidden, export_folder
 from core.progress import ProgressTracker
+
+
+class _SI:
+    def __init__(self, file_attributes: int):
+        self.file_attributes = file_attributes
+
+
+class _Attrs:
+    def __init__(self, file_attributes: int):
+        self._fa = file_attributes
+
+    def get(self, _code):
+        return _SI(self._fa)
+
+
+class _Child:
+    """Mimics a dissect TargetPath enough for _entry_hidden's NTFS path:
+    child.get().entry.attributes.get(STANDARD_INFORMATION).file_attributes."""
+
+    def __init__(self, file_attributes: int):
+        self._fa = file_attributes
+
+    def get(self):
+        entry = type("E", (), {"attributes": _Attrs(self._fa)})()
+        return type("FsEntry", (), {"entry": entry})()
+
+
+def test_entry_hidden_reads_ntfs_attribute_bit():
+    # 0x26 = HIDDEN|SYSTEM|ARCHIVE (e.g. desktop.ini); 0x20 = ARCHIVE only.
+    assert _entry_hidden(_Child(0x26), "desktop.ini") is True
+    assert _entry_hidden(_Child(0x20), "photo.gif") is False
+
+
+def test_entry_hidden_falls_back_to_name_when_not_ntfs():
+    class _NoGet:
+        def get(self):
+            raise AttributeError("not an ntfs entry")
+
+    assert _entry_hidden(_NoGet(), ".bashrc") is True
+    assert _entry_hidden(_NoGet(), "report.txt") is False
 
 
 def _seed_tree(root: Path) -> None:
