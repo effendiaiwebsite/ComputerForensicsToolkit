@@ -202,6 +202,8 @@ function pickRenderer(event: ForensicEvent): Renderer {
       return EvtxRecordView;
     case "file_access":
       return FileAccessView;
+    case "file_delete":
+      return RecycleBinView;
     case "program_install":
       return ProgramInstallView;
     default:
@@ -647,6 +649,38 @@ function FileAccessView({ event }: RendererProps) {
           ["volume label", val(e.volume_label)],
           ["drive type", val(e.drive_type)],
           ["drive serial", val(e.drive_serial)],
+        ]}
+      />
+      <CollapsibleRaw data={event.raw} />
+    </>
+  );
+}
+
+// ---------- recycle bin ------------------------------------------------------
+
+function RecycleBinView({ event }: RendererProps) {
+  const e = event.evidence as Record<string, unknown>;
+  const original = String(e.original_path ?? "");
+  const name = String(e.deleted_name ?? "");
+  const size = e.deleted_size as number | undefined;
+  return (
+    <>
+      <SectionHeader>deleted file</SectionHeader>
+      <div className="mb-2 break-all text-foreground">{name || original || "—"}</div>
+      <div className="mb-2 flex flex-wrap gap-1">
+        {typeof size === "number" && size > 0 && <Pill tone="accent">{bytes(size)}</Pill>}
+        {typeof e.recovered_name === "string" && e.recovered_name && (
+          <Pill tone="warning" title="recoverable content blob">
+            {e.recovered_name as string}
+          </Pill>
+        )}
+      </div>
+      <KVList
+        rows={[
+          ["original path", <span className="break-all">{original}</span>],
+          ["deleted at", val(event.timestamp)],
+          ["sid", val(e.sid)],
+          ["$I format", val(e.format_version)],
         ]}
       />
       <CollapsibleRaw data={event.raw} />

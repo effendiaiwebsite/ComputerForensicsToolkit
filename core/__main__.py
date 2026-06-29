@@ -155,6 +155,20 @@ def _make_run_triage_hive(store: EventStore):
             host_id = host_id_hint
             note = f"ie index.dat: {artifact.source_path}"
             kind_out = "ie.index_dat"
+        elif basename_lower.startswith("$i") and basename_lower != "$i30":
+            from collectors.windows.recycle_bin import collect_recycle_bin
+            from parsers.recycle_bin import parse_recycle_bin
+
+            artifact = collect_recycle_bin(hive_path, host_id=host_id_hint)
+            events = parse_recycle_bin(
+                artifact.source_path,
+                collection_id=collection_id,
+                host_id_hint=host_id_hint,
+                user_hint=user_hint,
+            )
+            host_id = host_id_hint
+            note = f"recycle bin: {artifact.source_path}"
+            kind_out = "recycle_bin"
         elif is_browser_history:
             from collectors.windows.browser import collect_browser_history
             from parsers.browser import parse_browser_history
@@ -291,6 +305,7 @@ def _make_run_triage_directory(store: EventStore):
         from collectors.windows.jumplist import collect_jumplist
         from collectors.windows.lnk import collect_lnk
         from collectors.windows.prefetch import collect_prefetch
+        from collectors.windows.recycle_bin import collect_recycle_bin
         from collectors.windows.user_hives import (
             discover_browser_histories,
             discover_evtx_files,
@@ -300,6 +315,7 @@ def _make_run_triage_directory(store: EventStore):
             discover_jumplist_files,
             discover_lnk_files,
             discover_prefetch_files,
+            discover_recycle_bin_files,
             discover_webcache_files,
         )
         from parsers.browser import parse_browser_history
@@ -307,6 +323,7 @@ def _make_run_triage_directory(store: EventStore):
         from parsers.firefox import parse_firefox_history
         from parsers.ie_index_dat import parse_ie_index_dat
         from parsers.ie_webcache import parse_ie_webcache
+        from parsers.recycle_bin import parse_recycle_bin
         from parsers.jumplist import parse_jumplist
         from parsers.lnk import parse_lnk
         from parsers.prefetch import parse_prefetch
@@ -321,17 +338,19 @@ def _make_run_triage_directory(store: EventStore):
         firefox_files = discover_firefox_profiles(dir_path)
         webcache_files = discover_webcache_files(dir_path)
         index_dat_files = discover_index_dat_files(dir_path)
+        recycle_bin_files = discover_recycle_bin_files(dir_path)
         if not (
             hives or evtx_files or prefetch_files
             or lnk_files or jumplist_files or browser_files
             or firefox_files or webcache_files or index_dat_files
+            or recycle_bin_files
         ):
             return {
                 "ok": False,
                 "error": (
                     f"no registry hives, .evtx, .pf, .lnk, JumpList, browser "
-                    f"History, Firefox places, WebCache, or index.dat files "
-                    f"found under {dir_path!r}"
+                    f"History, Firefox places, WebCache, index.dat, or Recycle "
+                    f"Bin files found under {dir_path!r}"
                 ),
             }
 
@@ -616,6 +635,34 @@ def _make_run_triage_directory(store: EventStore):
                     "error": f"{type(exc).__name__}: {exc}",
                 })
 
+        for rb in recycle_bin_files:
+            try:
+                artifact = collect_recycle_bin(rb.path, host_id=host_id)
+                events = parse_recycle_bin(
+                    artifact.source_path,
+                    collection_id=collection_id,
+                    host_id_hint=host_id,
+                    user_hint=rb.user_hint,
+                )
+                inserted = store.insert_events(events)
+                total += inserted
+                per_hive.append({
+                    "kind": "recycle_bin",
+                    "path": str(rb.path),
+                    "user_hint": rb.user_hint,
+                    "sha256": artifact.sha256,
+                    "size_bytes": artifact.size_bytes,
+                    "event_count": inserted,
+                })
+            except Exception as exc:
+                log.exception("parse failed for %s", rb.path)
+                per_hive.append({
+                    "kind": "recycle_bin",
+                    "path": str(rb.path),
+                    "user_hint": rb.user_hint,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+
         return {
             "collection_id": collection_id,
             "host_id": host_id,
@@ -749,6 +796,17 @@ def _make_query_browser_domains(store: EventStore):
             limit=int(request.get("limit", 1000)),
         )
         return {"domains": rows, "total": len(rows)}
+
+    return handler
+
+
+def _make_query_activity_by_day(store: EventStore):
+    def handler(request: dict[str, Any]) -> dict[str, Any]:
+        from core.activity import DEFAULT_K, compute_activity
+
+        daily = store.activity_by_day(collection_id=request.get("collection_id"))
+        k = request.get("k")
+        return compute_activity(daily, k=float(k) if k is not None else DEFAULT_K)
 
     return handler
 
@@ -1251,6 +1309,7 @@ def build_dispatcher(
         _make_query_program_execution_composite(store),
     )
     dispatcher.register("query_browser_domains", _make_query_browser_domains(store))
+    dispatcher.register("query_activity_by_day", _make_query_activity_by_day(store))
     dispatcher.register("generate_report", _make_generate_report(store))
     dispatcher.register("enumerate_drives", _make_enumerate_drives())
     dispatcher.register("get_progress", _make_get_progress(progress))

@@ -605,6 +605,57 @@ class EventStore:
         rows = self._conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
+    def activity_by_day(self, *, collection_id: str | None = None) -> list[dict[str, Any]]:
+        """Per-calendar-day event counts with a per-event-type breakdown.
+
+        Days are the ``YYYY-MM-DD`` prefix of the normalized ISO-8601 (UTC)
+        timestamp; undated events are excluded. Returned in ascending date
+        order, each row ``{date, count, by_event_type}``.
+        """
+        where = ["timestamp IS NOT NULL"]
+        params: list[Any] = []
+        if collection_id is not None:
+            where.append("collection_id = ?")
+            params.append(collection_id)
+        sql = (
+            "SELECT substr(timestamp, 1, 10) AS day, event_type, COUNT(*) AS c "
+            "FROM events WHERE " + " AND ".join(where) +
+            " GROUP BY day, event_type ORDER BY day ASC"
+        )
+        per_day: dict[str, dict[str, Any]] = {}
+        for r in self._conn.execute(sql, params).fetchall():
+            day = r["day"]
+            d = per_day.setdefault(day, {"date": day, "count": 0, "by_event_type": {}})
+            d["count"] += r["c"]
+            d["by_event_type"][r["event_type"]] = r["c"]
+        return list(per_day.values())
+
+    def events_on_day(
+        self,
+        day: str,
+        *,
+        collection_id: str | None = None,
+        event_types: list[str] | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Events whose timestamp falls on ``day`` (``YYYY-MM-DD``), ascending."""
+        where = ["substr(timestamp, 1, 10) = ?"]
+        params: list[Any] = [day]
+        if collection_id is not None:
+            where.append("collection_id = ?")
+            params.append(collection_id)
+        if event_types:
+            placeholders = ",".join("?" * len(event_types))
+            where.append(f"event_type IN ({placeholders})")
+            params.extend(event_types)
+        sql = (
+            "SELECT event_id, timestamp, event_type, source_artifact, summary "
+            "FROM events WHERE " + " AND ".join(where) +
+            " ORDER BY timestamp ASC LIMIT ?"
+        )
+        params.append(limit)
+        return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
+
     def count_undated_events(
         self,
         *,

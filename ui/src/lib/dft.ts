@@ -214,6 +214,31 @@ export async function queryBrowserDomains(args: {
   return invoke<BrowserDomainsResult>("query_browser_domains", { args });
 }
 
+export type ActivityDay = {
+  date: string;
+  count: number;
+  by_event_type: Record<string, number>;
+  busy: boolean;
+};
+
+export type ActivityByDayResult = {
+  ok: boolean;
+  days: ActivityDay[];
+  mean: number;
+  stddev: number;
+  threshold: number;
+  k: number;
+  busy_dates: string[];
+  error?: string;
+};
+
+export async function queryActivityByDay(args: {
+  collection_id?: string;
+  k?: number;
+}): Promise<ActivityByDayResult> {
+  return invoke<ActivityByDayResult>("query_activity_by_day", { args });
+}
+
 export type GenerateReportResult = {
   ok: boolean;
   collection_id: string;

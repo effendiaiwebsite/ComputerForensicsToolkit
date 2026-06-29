@@ -136,6 +136,17 @@ async fn query_browser_domains(
 }
 
 #[tauri::command]
+async fn query_activity_by_day(
+    sidecar: State<'_, Sidecar>,
+    args: Value,
+) -> Result<Value, String> {
+    sidecar
+        .request("query_activity_by_day", args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn generate_report(
     sidecar: State<'_, Sidecar>,
     args: Value,
@@ -253,6 +264,7 @@ pub fn run() {
             query_findings,
             query_usb_devices,
             query_browser_domains,
+            query_activity_by_day,
             generate_report,
             enumerate_drives,
             run_live_collection,

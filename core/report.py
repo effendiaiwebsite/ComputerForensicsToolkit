@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import html
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -67,6 +67,7 @@ def generate_report(
         _render_summary(meta, events_summary, findings_by_severity, len(findings)),
         _render_mitre_heatmap(findings),
         _render_timeline(timeline_points, events_summary["by_source_artifact"]),
+        _render_per_day(store, collection_id),
         _render_findings(findings),
         _render_per_artifact(per_artifact),
         _render_footer(meta),
@@ -428,6 +429,104 @@ def _render_per_artifact(per_artifact: list[dict[str, Any]]) -> str:
 """
 
 
+# A day's digest leads with high-signal activity (deletions, executions,
+# persistence, account/USB events) and fills the remainder with lower-signal
+# browsing/file-access so late-day smoking guns aren't crowded out by morning
+# web traffic on a busy day.
+_HIGH_VALUE_DAY_TYPES = (
+    "file_delete", "program_execution", "browser_download", "persistence_entry",
+    "account_change", "service_install", "scheduled_task", "shell_command",
+    "usb_connection",
+)
+_FILLER_DAY_TYPES = ("browser_visit", "file_access")
+_DAY_SAMPLE_LIMIT = 15
+_PER_TYPE_CAP = 5  # up to this many of each high-value type, so every type is represented
+
+
+def _day_samples(store: EventStore, collection_id: str, day: str) -> list[dict[str, Any]]:
+    """Representative sample of a day's activity for the digest.
+
+    Takes up to ``_PER_TYPE_CAP`` of *each* high-value type (so a late-day
+    deletion isn't crowded out by a morning of program executions), then fills
+    the remaining slots with lower-signal browsing/file-access. High-value picks
+    are always kept; the result is sorted by time for display.
+    """
+    seen: set[str] = set()
+    high: list[dict[str, Any]] = []
+    for etype in _HIGH_VALUE_DAY_TYPES:
+        for r in store.events_on_day(
+            day, collection_id=collection_id, event_types=[etype], limit=_PER_TYPE_CAP,
+        ):
+            if r["event_id"] not in seen:
+                seen.add(r["event_id"])
+                high.append(r)
+
+    fill = max(0, _DAY_SAMPLE_LIMIT - len(high))
+    filler: list[dict[str, Any]] = []
+    if fill:
+        for r in store.events_on_day(
+            day, collection_id=collection_id, event_types=list(_FILLER_DAY_TYPES), limit=fill,
+        ):
+            if r["event_id"] not in seen:
+                seen.add(r["event_id"])
+                filler.append(r)
+
+    out = high + filler
+    if not out:  # collection has only types outside both lists
+        out = store.events_on_day(day, collection_id=collection_id, limit=_DAY_SAMPLE_LIMIT)
+    out.sort(key=lambda s: s.get("timestamp") or "")
+    return out
+
+
+def _render_per_day(store: EventStore, collection_id: str) -> str:
+    """Per-busy-day activity digest — answers "what was the user doing on day X?".
+
+    Reuses the same ``mean + k·σ`` busy-day rule as the Timeline tab so the two
+    views agree on which days stand out.
+    """
+    from core.activity import compute_activity
+
+    analysis = compute_activity(store.activity_by_day(collection_id=collection_id))
+    busy = [d for d in analysis["days"] if d["busy"]]
+    if not busy:
+        peak = max((d["count"] for d in analysis["days"]), default=0)
+        return (
+            '<section class="per-day"><h2>Daily activity</h2>'
+            f'<div class="muted small">No statistically busy days '
+            f'(threshold {analysis["threshold"]:.0f} events/day; busiest day {peak}).</div></section>'
+        )
+
+    blocks = []
+    for d in sorted(busy, key=lambda x: -x["count"]):
+        chips = "".join(
+            f'<span class="chip">{esc(t)}: {c:,}</span>'
+            for t, c in sorted(d["by_event_type"].items(), key=lambda kv: -kv[1])
+        )
+        samples = _day_samples(store, collection_id, d["date"])
+        sample_rows = "".join(
+            f"<tr><td class='mono small'>{esc((s.get('timestamp') or '—')[11:19] or '—')}</td>"
+            f"<td>{esc(s.get('event_type'))}</td>"
+            f"<td>{esc(s.get('summary'))}</td></tr>"
+            for s in samples
+        )
+        blocks.append(
+            f'<div class="artifact">'
+            f'<h3>{esc(d["date"])} <span class="muted">({d["count"]:,} events)</span> '
+            f'<span class="chip sev-high">busy</span></h3>'
+            f'<div class="chips">{chips}</div>'
+            f'<table class="artifact-table">'
+            f'<thead><tr><th>Time (UTC)</th><th>Event type</th><th>Activity</th></tr></thead>'
+            f'<tbody>{sample_rows}</tbody></table></div>'
+        )
+    return f"""
+<section class="per-day">
+  <h2>Daily activity <span class="muted">({len(busy)} busy day{"" if len(busy) == 1 else "s"} · &gt; {analysis['threshold']:.0f} events/day)</span></h2>
+  <div class="muted small">Days whose event count exceeds mean + 1.5σ ({analysis['mean']:.0f} ± {analysis['stddev']:.0f}). Up to 15 notable events shown per day.</div>
+  {''.join(blocks)}
+</section>
+"""
+
+
 def _render_footer(meta: dict[str, Any]) -> str:
     return f"""
 <footer class="report-footer">
@@ -470,7 +569,14 @@ def _iso_to_ms(s: str | None) -> int | None:
 
 
 def _ms_to_short(ms: int) -> str:
-    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+    # epoch + timedelta avoids datetime.fromtimestamp's platform limits
+    # (Windows raises OSError on negative / far-out-of-range values that can
+    # slip in from a malformed artifact timestamp).
+    try:
+        dt = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(milliseconds=ms)
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except (OverflowError, ValueError, OSError):
+        return "—"
 
 
 # ----- HTML shell ------------------------------------------------------------

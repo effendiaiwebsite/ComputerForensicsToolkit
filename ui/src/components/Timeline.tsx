@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import ReactECharts from "echarts-for-react";
 import type { EChartsOption, ECharts } from "echarts";
 
@@ -12,6 +12,7 @@ const EVENT_TYPE_COLORS: Record<string, string> = {
   service_install: "#fbbf24",
   account_change: "#f472b6",
   file_access: "#34d399",
+  file_delete: "#e11d48",
   shell_command: "#fb7185",
   system_config_change: "#94a3b8",
   logon: "#4ade80",
@@ -28,12 +29,26 @@ export function Timeline({
   categories,
   points,
   onEventClick,
+  focus,
 }: {
   categories: string[];
   points: TimelinePoint[];
   onEventClick: (eventId: string) => void;
+  focus?: { startMs: number; endMs: number } | null;
 }) {
   const ref = useRef<ReactECharts | null>(null);
+
+  // Zoom the x-axis to the requested window (e.g. a clicked busy day).
+  useEffect(() => {
+    if (!focus) return;
+    const chart = ref.current?.getEchartsInstance();
+    if (!chart) return;
+    chart.dispatchAction({
+      type: "dataZoom",
+      startValue: focus.startMs,
+      endValue: focus.endMs,
+    });
+  }, [focus]);
 
   const option = useMemo<EChartsOption>(() => {
     const seriesByType: Record<string, TimelinePoint[]> = {};

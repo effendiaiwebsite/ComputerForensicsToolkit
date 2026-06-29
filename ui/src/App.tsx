@@ -11,6 +11,7 @@ import { Activity, AlertTriangle, ArrowDown, ArrowUp, FileText, Files, FolderOpe
 
 import { DetailPane } from "@/components/DetailPane";
 import { FilesBrowser } from "@/components/FilesBrowser";
+import { BusyDayStrip } from "@/components/BusyDayStrip";
 import { Timeline } from "@/components/Timeline";
 import { Welcome } from "@/components/Welcome";
 import { Button } from "@/components/ui/button";
@@ -24,6 +25,7 @@ import {
   getProgress,
   isElevated,
   pingSidecar,
+  queryActivityByDay,
   queryBrowserDomains,
   queryEvents,
   queryFindings,
@@ -33,6 +35,7 @@ import {
   runLiveCollection,
   runTriageDirectory,
   runTriageHive,
+  type ActivityDay,
   type BrowserDomain,
   type ExecutionCompositeRow,
   type Finding,
@@ -208,6 +211,10 @@ export default function App() {
   const [timelineCategories, setTimelineCategories] = useState<string[]>([]);
   const [timelinePoints, setTimelinePoints] = useState<TimelinePoint[]>([]);
   const [timelineSkippedNull, setTimelineSkippedNull] = useState(0);
+  const [activityDays, setActivityDays] = useState<ActivityDay[]>([]);
+  const [activityThreshold, setActivityThreshold] = useState(0);
+  const [selectedDay, setSelectedDay] = useState<string | null>(null);
+  const [timelineFocus, setTimelineFocus] = useState<{ startMs: number; endMs: number } | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [findingsTotal, setFindingsTotal] = useState(0);
   const [findingsBySeverity, setFindingsBySeverity] = useState<Record<string, number>>({});
@@ -311,6 +318,11 @@ export default function App() {
           setTimelineSkippedNull(res.skipped_null_ts);
         } else {
           setSidecar({ kind: "error", message: res.error ?? "timeline query failed" });
+        }
+        const act = await queryActivityByDay({ collection_id: collection.collection_id });
+        if (act.ok) {
+          setActivityDays(act.days);
+          setActivityThreshold(act.threshold);
         }
       } catch (err) {
         setSidecar({ kind: "error", message: err instanceof Error ? err.message : String(err) });
@@ -914,21 +926,36 @@ export default function App() {
             ) : view === "execution" ? (
               <ExecutionTable rows={execRows} hasCollection={!!collection} />
             ) : view === "timeline" ? (
-              <Timeline
-                categories={timelineCategories}
-                points={timelinePoints}
-                onEventClick={async (eventId) => {
-                  try {
-                    const res = await getEvent(eventId);
-                    if (res.ok && res.event) setSelected(res.event);
-                  } catch (err) {
-                    setSidecar({
-                      kind: "error",
-                      message: err instanceof Error ? err.message : String(err),
-                    });
-                  }
-                }}
-              />
+              <div className="flex h-full flex-col">
+                <BusyDayStrip
+                  days={activityDays}
+                  threshold={activityThreshold}
+                  selected={selectedDay}
+                  onSelectDay={(date) => {
+                    const startMs = Date.parse(`${date}T00:00:00Z`);
+                    setSelectedDay(date);
+                    setTimelineFocus({ startMs, endMs: startMs + 86_400_000 });
+                  }}
+                />
+                <div className="min-h-0 flex-1">
+                  <Timeline
+                    categories={timelineCategories}
+                    points={timelinePoints}
+                    focus={timelineFocus}
+                    onEventClick={async (eventId) => {
+                      try {
+                        const res = await getEvent(eventId);
+                        if (res.ok && res.event) setSelected(res.event);
+                      } catch (err) {
+                        setSidecar({
+                          kind: "error",
+                          message: err instanceof Error ? err.message : String(err),
+                        });
+                      }
+                    }}
+                  />
+                </div>
+              </div>
             ) : view === "findings" ? (
               <FindingsTable
                 findings={findings}

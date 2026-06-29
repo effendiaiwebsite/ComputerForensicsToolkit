@@ -108,6 +108,51 @@ def test_timeline_lanes_labelled(populated_store: EventStore) -> None:
     assert "<circle" in html
 
 
+def test_per_day_section_flags_busy_day() -> None:
+    store = EventStore()
+    store.register_collection(
+        collection_id="busy", host_id="H", host_os="windows",
+        created_at="2026-06-13T12:00:00Z", note="busy-day fixture",
+    )
+    evs = []
+    # quiet baseline: 2 events/day across several days
+    for day in range(10, 14):
+        for h in range(2):
+            evs.append(make_event(
+                host_os="windows", host_id="H", source_artifact="prefetch", source_path="/p",
+                event_type="program_execution", summary=f"baseline {day}",
+                evidence={}, collection_id="busy", parser_version="v",
+                timestamp=f"2007-07-{day:02d}T0{h}:00:00Z",
+            ))
+    # spike day: lots of low-signal browsing (filler) plus one late-day deletion.
+    for i in range(40):
+        evs.append(make_event(
+            host_os="windows", host_id="H", source_artifact="ie.index_dat", source_path="/p",
+            event_type="browser_visit", summary=f"visit {i}", evidence={},
+            collection_id="busy", parser_version="v", timestamp=f"2007-07-14T{i % 24:02d}:05:00Z",
+        ))
+    evs.append(make_event(
+        host_os="windows", host_id="H", source_artifact="recycle_bin", source_path="/p",
+        event_type="file_delete", summary="Deleted: CameraShy.exe", evidence={},
+        collection_id="busy", parser_version="v", timestamp="2007-07-14T17:55:00Z",
+    ))
+    store.insert_events(evs)
+    html = generate_report(store, "busy", case_name="C", examiner="E")
+    # Assert specifically within the per-day section (not the per-artifact dump).
+    per_day = re.search(r'<section class="per-day">.*?</section>', html, re.S)
+    assert per_day is not None
+    section = per_day.group(0)
+    assert "2007-07-14" in section
+    # the late-day deletion is prioritised over the 40 morning visits
+    assert "Deleted: CameraShy.exe" in section
+
+
+def test_per_day_section_notes_when_no_busy_days(populated_store: EventStore) -> None:
+    html = generate_report(populated_store, _CID, case_name="C", examiner="E")
+    # The flat 1-event-per-day fixture has no statistical spike.
+    assert "No statistically busy days" in html
+
+
 def test_empty_collection_renders_without_crashing() -> None:
     store = EventStore()
     store.register_collection(

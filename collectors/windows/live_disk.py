@@ -116,6 +116,7 @@ class ArtifactSpec:
     user_relative: str | None = None
     glob: bool = False  # copy every regular file under the path (recursive)
     filename: str | None = None  # when globbing, only files with this basename (case-insensitive)
+    name_prefix: str | None = None  # when globbing, only files whose basename starts with this
 
 
 _SYSTEM_ARTIFACTS: tuple[ArtifactSpec, ...] = (
@@ -150,6 +151,13 @@ _USER_GLOBS: tuple[ArtifactSpec, ...] = (
     # Legacy IE (Vista–IE9): History.IE5 + daily MSHist sub-indexes, all named
     # index.dat. Glob the History tree and grab every index.dat.
     ArtifactSpec("IE history (index.dat)", "browser", user_relative="AppData/Local/Microsoft/Windows/History", glob=True, filename="index.dat"),
+)
+
+# Recycle Bin lives at the volume root (one $Recycle.Bin\<SID>\ per user), not
+# under a home dir — so it's a system glob. Grab only the small $I metadata
+# records ($R recoverable content is left for a targeted recovery).
+_RECYCLE_GLOBS: tuple[ArtifactSpec, ...] = (
+    ArtifactSpec("Recycle Bin ($I)", "recycle_bin", system_path="/$Recycle.Bin", glob=True, name_prefix="$i"),
 )
 
 
@@ -396,10 +404,10 @@ def _enumerate_user_and_glob_specs(
     Yields ``(spec, src_target_path, dest_rel_path_str)``.
     """
     # System-wide globbed dirs — copy every regular file under them.
-    for spec in _SYSTEM_GLOBS:
+    for spec in (*_SYSTEM_GLOBS, *_RECYCLE_GLOBS):
         assert spec.system_path is not None
         glob_root = root.path(spec.system_path)
-        for entry in _iter_files(glob_root, filename=spec.filename):
+        for entry in _iter_files(glob_root, filename=spec.filename, name_prefix=spec.name_prefix):
             rel = _relativize(entry, glob_root)
             dest_rel = spec.system_path.lstrip("/") + "/" + rel
             yield spec, entry, dest_rel
@@ -474,15 +482,22 @@ def _normalize_home(home_value: Any) -> str | None:
     return h
 
 
-def _iter_files(root: Any, *, filename: str | None = None) -> Iterator[Any]:
+def _iter_files(root: Any, *, filename: str | None = None, name_prefix: str | None = None) -> Iterator[Any]:
     want = filename.lower() if filename else None
+    pref = name_prefix.lower() if name_prefix else None
     try:
         if not root.exists() or not root.is_dir():
             return
         for entry in root.rglob("*"):
             try:
-                if entry.is_file() and (want is None or entry.name.lower() == want):
-                    yield entry
+                name = entry.name.lower()
+                if not entry.is_file():
+                    continue
+                if want is not None and name != want:
+                    continue
+                if pref is not None and (not name.startswith(pref) or name == "$i30"):
+                    continue
+                yield entry
             except Exception:  # noqa: BLE001
                 continue
     except Exception:  # noqa: BLE001

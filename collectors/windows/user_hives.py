@@ -258,6 +258,32 @@ def discover_webcache_files(directory: str | Path) -> list[DiscoveredWebCache]:
 
 
 @dataclass
+class DiscoveredRecycleBin:
+    path: Path
+    user_hint: str | None = None
+
+
+def discover_recycle_bin_files(directory: str | Path) -> list[DiscoveredRecycleBin]:
+    """Find every Recycle Bin ``$I`` metadata file under the directory.
+
+    Matches basenames beginning ``$I`` (case-insensitive) but excludes ``$I30``
+    — that is the NTFS directory-index attribute name, not a Recycle Bin record.
+    The owning user is left to the parser/SID; ``user_hint`` is filled from a
+    ``Users\\<name>`` path segment only when one happens to be present.
+    """
+    root = Path(directory).resolve()
+    if not root.is_dir():
+        raise NotADirectoryError(f"not a directory: {root}")
+    found = [
+        DiscoveredRecycleBin(path=p, user_hint=_user_from_path(p, root))
+        for p in root.rglob("*")
+        if p.is_file() and p.name.lower().startswith("$i") and p.name.lower() != "$i30"
+    ]
+    found.sort(key=lambda e: str(e.path))
+    return found
+
+
+@dataclass
 class DiscoveredIndexDat:
     path: Path
     user_hint: str | None = None

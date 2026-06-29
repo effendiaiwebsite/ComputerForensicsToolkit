@@ -22,6 +22,7 @@
 | Firefox history | `%APPDATA%\Mozilla\Firefox\Profiles\*\places.sqlite` (SQLite) | stdlib `sqlite3` |
 | IE / legacy-Edge history+downloads (IE10+) | `%LOCALAPPDATA%\Microsoft\Windows\WebCache\WebCacheV01.dat` (ESE) | `dissect.database.ese` |
 | IE history/cache (legacy, IE5–9 / Vista) | `...\History\History.IE5\index.dat`, `...\Content.IE5\index.dat`, `...\Cookies\index.dat` (MSIE Cache File) | `pymsiecf` (libmsiecf) |
+| Recycle Bin | `C:\$Recycle.Bin\<SID>\$I*` ($I metadata records) | custom parser (struct) |
 
 ## Collection strategy
 
