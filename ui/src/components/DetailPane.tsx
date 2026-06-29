@@ -196,6 +196,7 @@ function pickRenderer(event: ForensicEvent): Renderer {
     case "service_install":
       return ServiceInstallView;
     case "account_change":
+      return event.source_artifact === "registry.sam" ? AccountView : EvtxRecordView;
     case "shell_command":
     case "scheduled_task":
     case "security_event":
@@ -649,6 +650,35 @@ function FileAccessView({ event }: RendererProps) {
           ["volume label", val(e.volume_label)],
           ["drive type", val(e.drive_type)],
           ["drive serial", val(e.drive_serial)],
+        ]}
+      />
+      <CollapsibleRaw data={event.raw} />
+    </>
+  );
+}
+
+// ---------- SAM local account ------------------------------------------------
+
+function AccountView({ event }: RendererProps) {
+  const e = event.evidence as Record<string, unknown>;
+  const username = String(e.username ?? "—");
+  return (
+    <>
+      <SectionHeader>local account</SectionHeader>
+      <div className="mb-2 text-base font-semibold text-foreground">{username}</div>
+      <div className="mb-2 flex flex-wrap gap-1">
+        {e.rid != null && <Pill tone="accent">RID {String(e.rid)}</Pill>}
+        {e.account_disabled === true && <Pill tone="warning">disabled</Pill>}
+        {e.account_locked === true && <Pill tone="warning">locked</Pill>}
+      </div>
+      <KVList
+        rows={[
+          ["SID", <span className="break-all mono">{val(e.sid)}</span>],
+          ["full name", val(e.full_name)],
+          ["last logon", val(e.last_logon)],
+          ["password last set", val(e.password_last_set)],
+          ["login count", val(e.login_count)],
+          ["machine SID", <span className="break-all mono">{val(e.machine_sid)}</span>],
         ]}
       />
       <CollapsibleRaw data={event.raw} />
