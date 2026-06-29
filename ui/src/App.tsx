@@ -573,7 +573,7 @@ export default function App() {
               DFT — Digital Forensics Triage Toolkit
             </h1>
             <span className="font-mono text-xs text-muted-foreground whitespace-nowrap">
-              Phase 1 · Windows · M14
+              Phase 1 · Windows · M15
             </span>
           </div>
           <div className="flex items-center gap-3 shrink-0">
@@ -995,7 +995,7 @@ export default function App() {
           : view === "devices"
           ? `usb devices: ${usbDevices.length} · findings: ${findingsTotal} · M14`
           : view === "browser"
-          ? `browser hosts: ${browserDomains.length} · findings: ${findingsTotal} · M14`
+          ? `browser hosts: ${browserDomains.length} · findings: ${findingsTotal} · M15`
           : `image filesystem browser · M14`}
       </footer>
     </div>

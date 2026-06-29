@@ -438,7 +438,7 @@ def _iter_users(target: Any, *, root: "_FsRoot | None" = None) -> Iterator[dict[
             home_value = getattr(ud, "home_path", None) or getattr(getattr(ud, "user", None), "home", None)
             name = getattr(getattr(ud, "user", None), "name", None) or getattr(ud, "name", None)
             if name:
-                yield {"name": str(name), "home": str(home_value) if home_value else None}
+                yield {"name": str(name), "home": _normalize_home(home_value)}
         return
     except (AttributeError, Exception):  # noqa: BLE001 — fall through deliberately
         pass
@@ -452,6 +452,26 @@ def _iter_users(target: Any, *, root: "_FsRoot | None" = None) -> Iterator[dict[
                     yield {"name": entry.name, "home": f"/Users/{entry.name}"}
     except Exception:  # noqa: BLE001
         return
+
+
+def _normalize_home(home_value: Any) -> str | None:
+    """Make a user home path resolvable against the *resolved* root filesystem.
+
+    ``target.user_details`` reports Windows-style homes like ``C:\\Users\\Wes``,
+    but when ``_resolve_windows_root`` falls back to the raw NTFS volume (common
+    for partition-image E01s), paths are volume-relative (``/Users/Wes``) and a
+    drive-lettered path resolves to nothing — silently dropping every per-user
+    artifact. Strip the drive letter and normalize separators so the home works
+    against both ``target.fs`` (live local) and a bare filesystem (image).
+    """
+    if not home_value:
+        return None
+    h = str(home_value).replace("\\", "/")
+    if len(h) >= 2 and h[1] == ":" and h[0].isalpha():
+        h = h[2:]
+    if not h.startswith("/"):
+        h = "/" + h
+    return h
 
 
 def _iter_files(root: Any, *, filename: str | None = None) -> Iterator[Any]:

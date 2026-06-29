@@ -16,9 +16,20 @@ from typing import Iterator
 
 import pytest
 
-from collectors.windows.live_disk import NoWindowsVolumeError, collect_live
+from collectors.windows.live_disk import NoWindowsVolumeError, _normalize_home, collect_live
 from core.audit import AuditLog
 from core.progress import ProgressTracker
+
+
+def test_normalize_home_strips_drive_for_volume_relative_root():
+    # user_details hands back Windows drive-lettered homes; the raw NTFS root
+    # (image E01s) needs volume-relative paths or every per-user artifact drops.
+    assert _normalize_home(r"C:\Users\Wes Mantooth") == "/Users/Wes Mantooth"
+    assert _normalize_home("C:/Users/Dracula") == "/Users/Dracula"
+    assert _normalize_home("/Users/already") == "/Users/already"
+    assert _normalize_home("Users/norel") == "/Users/norel"
+    assert _normalize_home(None) is None
+    assert _normalize_home("") is None
 
 
 @dataclass
