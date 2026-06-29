@@ -12,14 +12,12 @@ malformed and a triage tool that aborts on the first error is useless.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
 from pathlib import Path
 
 from regipy.plugins.system.computer_name import ComputerNamePlugin
 from regipy.plugins.system.services import ServicesPlugin
 from regipy.plugins.system.shimcache import ShimCachePlugin
 from regipy.plugins.system.timezone_data import TimezoneDataPlugin
-from regipy.plugins.system.usbstor import USBSTORPlugin
 from regipy.registry import RegistryHive
 
 from core.events import Event, make_event
@@ -136,16 +134,127 @@ def _run_timezone(
     return events
 
 
+# Property-store GUIDs/keys under a USBSTOR serial's ``Properties`` subkey
+# (Vista+). Stable Windows identifiers; mirrored from regipy's USBSTOR plugin.
+_USB_DEVICE_NAME_GUID = "{540b947e-8b40-45bc-a8a2-6a0b894cbda2}"
+_USB_DATES_GUID = "{83da6326-97a6-4088-9453-a1923f573b29}"
+_USB_DEVICE_NAME_KEY = "0004"
+_USB_DATE_KEYS = {
+    "first_installed": "0065",
+    "last_connected": "0066",
+    "last_removed": "0067",
+    "last_installed": "0064",
+}
+
+
+def _walk_usbstor(hive: RegistryHive) -> list[dict]:
+    """Enumerate USBSTOR devices, tolerating malformed entries.
+
+    regipy's ``USBSTORPlugin`` looks up the ``Properties`` subkey with
+    ``raise_on_missing`` defaulting to ``True``; on a Vista-era serial that has
+    no ``Properties`` child it raises ``NoRegistrySubkeysException``, which
+    escapes ``run()`` and drops *every* device. Here each serial is parsed
+    independently — a bad one is skipped, the rest still surface.
+    """
+    from regipy.exceptions import NoRegistrySubkeysException, RegistryKeyNotFoundException
+    from regipy.utils import convert_wintime
+
+    entries: list[dict] = []
+    try:
+        control_sets = hive.get_control_sets(r"Enum\USBSTOR")
+    except RegistryKeyNotFoundException:
+        return entries
+
+    for cs_path in control_sets:
+        try:
+            devices = list(hive.get_key(cs_path).iter_subkeys())
+        except (RegistryKeyNotFoundException, NoRegistrySubkeysException):
+            continue
+        for device in devices:
+            parts = device.name.split("&")
+            manufacturer, title, version = (
+                (parts[1], parts[2], parts[3]) if len(parts) == 4 else (None, None, None)
+            )
+            try:
+                serials = list(device.iter_subkeys())
+            except NoRegistrySubkeysException:
+                serials = []
+            for serial in serials:
+                try:
+                    entries.append(_usbstor_serial_entry(
+                        hive, cs_path, device.name, serial,
+                        manufacturer, title, version, convert_wintime,
+                    ))
+                except Exception:
+                    logger.exception(
+                        "skipping malformed USBSTOR serial %s\\%s",
+                        device.name, getattr(serial, "name", "?"),
+                    )
+    return entries
+
+
+def _usbstor_serial_entry(
+    hive, cs_path, device_name, serial, manufacturer, title, version, convert_wintime,
+) -> dict:
+    serial_number = serial.name
+    key_path = rf"{cs_path}\{device_name}\{serial_number}"
+    last_write = convert_wintime(serial.header.last_modified, as_json=True)
+
+    disk_guid = None
+    try:
+        # Optional sub-value, absent on many devices.
+        disk_guid = hive.get_key(rf"{key_path}\Device Parameters\Partmgr").get_value("DiskId")
+    except Exception:
+        disk_guid = None
+
+    device_dev_name = None
+    dates: dict[str, object] = {}
+    props = serial.get_subkey("Properties", raise_on_missing=False)
+    if props:
+        name_guid = props.get_subkey(_USB_DEVICE_NAME_GUID, raise_on_missing=False)
+        name_key = (
+            name_guid.get_subkey(_USB_DEVICE_NAME_KEY, raise_on_missing=False)
+            if name_guid else None
+        )
+        if name_key:
+            try:
+                device_dev_name = name_key.get_value()
+            except Exception:
+                device_dev_name = None
+        dates_key = props.get_subkey(_USB_DATES_GUID, raise_on_missing=False)
+        if dates_key:
+            for field, sub in _USB_DATE_KEYS.items():
+                k = dates_key.get_subkey(sub, raise_on_missing=False)
+                if k:
+                    try:
+                        dates[field] = k.get_value(as_json=True)
+                    except Exception:
+                        dates[field] = None
+
+    return {
+        "last_write": last_write,
+        "key_path": key_path,
+        "last_connected": dates.get("last_connected"),
+        "last_removed": dates.get("last_removed"),
+        "first_installed": dates.get("first_installed"),
+        "last_installed": dates.get("last_installed"),
+        "serial_number": serial_number,
+        "device_name": device_dev_name,
+        "disk_guid": disk_guid,
+        "manufacturer": manufacturer,
+        "version": version,
+        "title": title,
+    }
+
+
 def _run_usbstor(
     hive: RegistryHive,
     hive_path: str,
     collection_id: str,
     host_id: str,
 ) -> list[Event]:
-    plugin = USBSTORPlugin(hive, as_json=True)
-    plugin.run()
     events: list[Event] = []
-    for entry in plugin.entries or []:
+    for entry in _walk_usbstor(hive):
         ts = (
             entry.get("last_connected")
             or entry.get("last_installed")
