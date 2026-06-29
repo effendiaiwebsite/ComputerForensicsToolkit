@@ -113,7 +113,49 @@ def _make_run_triage_hive(store: EventStore):
             or (basename_lower == "history" and _detect_browser(hive_path) != "unknown")
         )
 
-        if is_browser_history:
+        if basename_lower == "places.sqlite":
+            from collectors.windows.firefox import collect_firefox_history
+            from parsers.firefox import parse_firefox_history
+
+            artifact = collect_firefox_history(hive_path, host_id=host_id_hint)
+            events = parse_firefox_history(
+                artifact.source_path,
+                collection_id=collection_id,
+                host_id_hint=host_id_hint,
+                user_hint=user_hint,
+            )
+            host_id = host_id_hint
+            note = f"firefox places: {artifact.source_path}"
+            kind_out = "firefox.history"
+        elif basename_lower == "webcachev01.dat":
+            from collectors.windows.ie_webcache import collect_webcache
+            from parsers.ie_webcache import parse_ie_webcache
+
+            artifact = collect_webcache(hive_path, host_id=host_id_hint)
+            events = parse_ie_webcache(
+                artifact.source_path,
+                collection_id=collection_id,
+                host_id_hint=host_id_hint,
+                user_hint=user_hint,
+            )
+            host_id = host_id_hint
+            note = f"ie webcache: {artifact.source_path}"
+            kind_out = "ie.webcache"
+        elif basename_lower == "index.dat":
+            from collectors.windows.ie_index_dat import collect_index_dat
+            from parsers.ie_index_dat import parse_ie_index_dat
+
+            artifact = collect_index_dat(hive_path, host_id=host_id_hint)
+            events = parse_ie_index_dat(
+                artifact.source_path,
+                collection_id=collection_id,
+                host_id_hint=host_id_hint,
+                user_hint=user_hint,
+            )
+            host_id = host_id_hint
+            note = f"ie index.dat: {artifact.source_path}"
+            kind_out = "ie.index_dat"
+        elif is_browser_history:
             from collectors.windows.browser import collect_browser_history
             from parsers.browser import parse_browser_history
 
@@ -242,20 +284,29 @@ def _make_run_triage_directory(store: EventStore):
 
         from collectors.windows.browser import collect_browser_history
         from collectors.windows.evtx import collect_evtx
+        from collectors.windows.firefox import collect_firefox_history
         from collectors.windows.hive import collect_hive
+        from collectors.windows.ie_index_dat import collect_index_dat
+        from collectors.windows.ie_webcache import collect_webcache
         from collectors.windows.jumplist import collect_jumplist
         from collectors.windows.lnk import collect_lnk
         from collectors.windows.prefetch import collect_prefetch
         from collectors.windows.user_hives import (
             discover_browser_histories,
             discover_evtx_files,
+            discover_firefox_profiles,
             discover_hives,
+            discover_index_dat_files,
             discover_jumplist_files,
             discover_lnk_files,
             discover_prefetch_files,
+            discover_webcache_files,
         )
         from parsers.browser import parse_browser_history
         from parsers.evtx import parse_evtx
+        from parsers.firefox import parse_firefox_history
+        from parsers.ie_index_dat import parse_ie_index_dat
+        from parsers.ie_webcache import parse_ie_webcache
         from parsers.jumplist import parse_jumplist
         from parsers.lnk import parse_lnk
         from parsers.prefetch import parse_prefetch
@@ -267,15 +318,20 @@ def _make_run_triage_directory(store: EventStore):
         lnk_files = discover_lnk_files(dir_path)
         jumplist_files = discover_jumplist_files(dir_path)
         browser_files = discover_browser_histories(dir_path)
+        firefox_files = discover_firefox_profiles(dir_path)
+        webcache_files = discover_webcache_files(dir_path)
+        index_dat_files = discover_index_dat_files(dir_path)
         if not (
             hives or evtx_files or prefetch_files
             or lnk_files or jumplist_files or browser_files
+            or firefox_files or webcache_files or index_dat_files
         ):
             return {
                 "ok": False,
                 "error": (
-                    f"no registry hives, .evtx, .pf, .lnk, JumpList, or browser "
-                    f"History files found under {dir_path!r}"
+                    f"no registry hives, .evtx, .pf, .lnk, JumpList, browser "
+                    f"History, Firefox places, WebCache, or index.dat files "
+                    f"found under {dir_path!r}"
                 ),
             }
 
@@ -473,6 +529,90 @@ def _make_run_triage_directory(store: EventStore):
                     "kind": f"{bh.browser_kind}.history",
                     "path": str(bh.path),
                     "user_hint": bh.user_hint,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+
+        for ff in firefox_files:
+            try:
+                artifact = collect_firefox_history(ff.path, host_id=host_id)
+                events = parse_firefox_history(
+                    artifact.source_path,
+                    collection_id=collection_id,
+                    host_id_hint=host_id,
+                    user_hint=ff.user_hint,
+                )
+                inserted = store.insert_events(events)
+                total += inserted
+                per_hive.append({
+                    "kind": "firefox.history",
+                    "path": str(ff.path),
+                    "user_hint": ff.user_hint,
+                    "sha256": artifact.sha256,
+                    "size_bytes": artifact.size_bytes,
+                    "event_count": inserted,
+                })
+            except Exception as exc:
+                log.exception("parse failed for %s", ff.path)
+                per_hive.append({
+                    "kind": "firefox.history",
+                    "path": str(ff.path),
+                    "user_hint": ff.user_hint,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+
+        for wc in webcache_files:
+            try:
+                artifact = collect_webcache(wc.path, host_id=host_id)
+                events = parse_ie_webcache(
+                    artifact.source_path,
+                    collection_id=collection_id,
+                    host_id_hint=host_id,
+                    user_hint=wc.user_hint,
+                )
+                inserted = store.insert_events(events)
+                total += inserted
+                per_hive.append({
+                    "kind": "ie.webcache",
+                    "path": str(wc.path),
+                    "user_hint": wc.user_hint,
+                    "sha256": artifact.sha256,
+                    "size_bytes": artifact.size_bytes,
+                    "event_count": inserted,
+                })
+            except Exception as exc:
+                log.exception("parse failed for %s", wc.path)
+                per_hive.append({
+                    "kind": "ie.webcache",
+                    "path": str(wc.path),
+                    "user_hint": wc.user_hint,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+
+        for ix in index_dat_files:
+            try:
+                artifact = collect_index_dat(ix.path, host_id=host_id)
+                events = parse_ie_index_dat(
+                    artifact.source_path,
+                    collection_id=collection_id,
+                    host_id_hint=host_id,
+                    user_hint=ix.user_hint,
+                )
+                inserted = store.insert_events(events)
+                total += inserted
+                per_hive.append({
+                    "kind": "ie.index_dat",
+                    "path": str(ix.path),
+                    "user_hint": ix.user_hint,
+                    "sha256": artifact.sha256,
+                    "size_bytes": artifact.size_bytes,
+                    "event_count": inserted,
+                })
+            except Exception as exc:
+                log.exception("parse failed for %s", ix.path)
+                per_hive.append({
+                    "kind": "ie.index_dat",
+                    "path": str(ix.path),
+                    "user_hint": ix.user_hint,
                     "error": f"{type(exc).__name__}: {exc}",
                 })
 

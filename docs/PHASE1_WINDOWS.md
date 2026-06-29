@@ -19,6 +19,9 @@
 | USB history (setupapi log) | `C:\Windows\INF\setupapi.dev.log` | custom text parser |
 | Chrome History | `%LOCALAPPDATA%\Google\Chrome\User Data\Default\History` (SQLite) | stdlib `sqlite3` |
 | Edge History | `%LOCALAPPDATA%\Microsoft\Edge\User Data\Default\History` (SQLite) | stdlib `sqlite3` |
+| Firefox history | `%APPDATA%\Mozilla\Firefox\Profiles\*\places.sqlite` (SQLite) | stdlib `sqlite3` |
+| IE / legacy-Edge history+downloads (IE10+) | `%LOCALAPPDATA%\Microsoft\Windows\WebCache\WebCacheV01.dat` (ESE) | `dissect.database.ese` |
+| IE history/cache (legacy, IE5–9 / Vista) | `...\History\History.IE5\index.dat`, `...\Content.IE5\index.dat`, `...\Cookies\index.dat` (MSIE Cache File) | `pymsiecf` (libmsiecf) |
 
 ## Collection strategy
 

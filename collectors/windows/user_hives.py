@@ -210,6 +210,77 @@ def discover_browser_histories(directory: str | Path) -> list[DiscoveredBrowserH
     return found
 
 
+@dataclass
+class DiscoveredFirefoxHistory:
+    path: Path
+    user_hint: str | None = None
+
+
+def discover_firefox_profiles(directory: str | Path) -> list[DiscoveredFirefoxHistory]:
+    """Find every Firefox ``places.sqlite`` under the directory.
+
+    Matched by basename only — a ``places.sqlite`` is unambiguously a Firefox
+    history DB regardless of where the profile dir lives (``...Mozilla\\
+    Firefox\\Profiles\\<rand>.default-release\\places.sqlite`` on Windows, or a
+    flat dump). The owning user is inferred from a ``Users\\<name>`` path
+    segment when present.
+    """
+    root = Path(directory).resolve()
+    if not root.is_dir():
+        raise NotADirectoryError(f"not a directory: {root}")
+    found = [
+        DiscoveredFirefoxHistory(path=p, user_hint=_user_from_path(p, root))
+        for p in root.rglob("*")
+        if p.is_file() and p.name.lower() == "places.sqlite"
+    ]
+    found.sort(key=lambda e: str(e.path))
+    return found
+
+
+@dataclass
+class DiscoveredWebCache:
+    path: Path
+    user_hint: str | None = None
+
+
+def discover_webcache_files(directory: str | Path) -> list[DiscoveredWebCache]:
+    """Find every IE/legacy-Edge ``WebCacheV01.dat`` under the directory."""
+    root = Path(directory).resolve()
+    if not root.is_dir():
+        raise NotADirectoryError(f"not a directory: {root}")
+    found = [
+        DiscoveredWebCache(path=p, user_hint=_user_from_path(p, root))
+        for p in root.rglob("*")
+        if p.is_file() and p.name.lower() == "webcachev01.dat"
+    ]
+    found.sort(key=lambda e: str(e.path))
+    return found
+
+
+@dataclass
+class DiscoveredIndexDat:
+    path: Path
+    user_hint: str | None = None
+
+
+def discover_index_dat_files(directory: str | Path) -> list[DiscoveredIndexDat]:
+    """Find every legacy IE ``index.dat`` (MSIE Cache File) under the directory.
+
+    Matches basename ``index.dat`` (case-insensitive), covering History.IE5,
+    Content.IE5 (cache), Cookies, and UserData index files alike.
+    """
+    root = Path(directory).resolve()
+    if not root.is_dir():
+        raise NotADirectoryError(f"not a directory: {root}")
+    found = [
+        DiscoveredIndexDat(path=p, user_hint=_user_from_path(p, root))
+        for p in root.rglob("*")
+        if p.is_file() and p.name.lower() == "index.dat"
+    ]
+    found.sort(key=lambda e: str(e.path))
+    return found
+
+
 # SYSTEM first so ComputerName is known before downstream parsers run.
 _KIND_ORDER: dict[HiveKind, int] = {
     "system": 0,

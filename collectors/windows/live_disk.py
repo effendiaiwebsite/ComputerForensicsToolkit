@@ -114,7 +114,8 @@ class ArtifactSpec:
     category: str
     system_path: str | None = None
     user_relative: str | None = None
-    glob: bool = False  # treat the final path segment as a glob
+    glob: bool = False  # copy every regular file under the path (recursive)
+    filename: str | None = None  # when globbing, only files with this basename (case-insensitive)
 
 
 _SYSTEM_ARTIFACTS: tuple[ArtifactSpec, ...] = (
@@ -136,11 +137,19 @@ _USER_ARTIFACTS: tuple[ArtifactSpec, ...] = (
     ArtifactSpec("Chrome History",     "browser",  user_relative="AppData/Local/Google/Chrome/User Data/Default/History"),
     ArtifactSpec("Edge History",       "browser",  user_relative="AppData/Local/Microsoft/Edge/User Data/Default/History"),
     ArtifactSpec("Brave History",      "browser",  user_relative="AppData/Local/BraveSoftware/Brave-Browser/User Data/Default/History"),
+    ArtifactSpec("IE/Edge WebCache",   "browser",  user_relative="AppData/Local/Microsoft/Windows/WebCache/WebCacheV01.dat"),
 )
 
 _USER_GLOBS: tuple[ArtifactSpec, ...] = (
     ArtifactSpec("Recent LNKs",        "lnk",      user_relative="AppData/Roaming/Microsoft/Windows/Recent", glob=True),
     ArtifactSpec("JumpLists",          "jumplist", user_relative="AppData/Roaming/Microsoft/Windows/Recent/AutomaticDestinations", glob=True),
+    # Firefox profile dirs are randomly named (``<rand>.default-release``), so
+    # glob the Profiles root and copy every regular file under each profile —
+    # places.sqlite, downloads, bookmarks all ride along.
+    ArtifactSpec("Firefox profiles",   "browser",  user_relative="AppData/Roaming/Mozilla/Firefox/Profiles", glob=True, filename="places.sqlite"),
+    # Legacy IE (Vista–IE9): History.IE5 + daily MSHist sub-indexes, all named
+    # index.dat. Glob the History tree and grab every index.dat.
+    ArtifactSpec("IE history (index.dat)", "browser", user_relative="AppData/Local/Microsoft/Windows/History", glob=True, filename="index.dat"),
 )
 
 
@@ -390,7 +399,7 @@ def _enumerate_user_and_glob_specs(
     for spec in _SYSTEM_GLOBS:
         assert spec.system_path is not None
         glob_root = root.path(spec.system_path)
-        for entry in _iter_files(glob_root):
+        for entry in _iter_files(glob_root, filename=spec.filename):
             rel = _relativize(entry, glob_root)
             dest_rel = spec.system_path.lstrip("/") + "/" + rel
             yield spec, entry, dest_rel
@@ -411,7 +420,7 @@ def _enumerate_user_and_glob_specs(
         for spec in _USER_GLOBS:
             assert spec.user_relative is not None
             glob_root = root.path(f"{home}/{spec.user_relative}")
-            for entry in _iter_files(glob_root):
+            for entry in _iter_files(glob_root, filename=spec.filename):
                 rel = _relativize(entry, glob_root)
                 dest_rel = f"{user_dest_root}/{spec.user_relative}/{rel}"
                 yield spec, entry, dest_rel
@@ -445,13 +454,14 @@ def _iter_users(target: Any, *, root: "_FsRoot | None" = None) -> Iterator[dict[
         return
 
 
-def _iter_files(root: Any) -> Iterator[Any]:
+def _iter_files(root: Any, *, filename: str | None = None) -> Iterator[Any]:
+    want = filename.lower() if filename else None
     try:
         if not root.exists() or not root.is_dir():
             return
         for entry in root.rglob("*"):
             try:
-                if entry.is_file():
+                if entry.is_file() and (want is None or entry.name.lower() == want):
                     yield entry
             except Exception:  # noqa: BLE001
                 continue

@@ -183,6 +183,8 @@ function pickRenderer(event: ForensicEvent): Renderer {
       return BrowserDownloadView;
     case "browser_search":
       return BrowserSearchView;
+    case "browser_bookmark":
+      return BrowserBookmarkView;
     case "program_execution":
       return ProgramExecutionView;
     case "persistence_entry":
@@ -340,6 +342,33 @@ function BrowserSearchView({ event }: RendererProps) {
           ["search url", <span className="break-all">{url}</span>],
         ]}
       />
+      <CollapsibleRaw data={event.raw} />
+    </>
+  );
+}
+
+function BrowserBookmarkView({ event }: RendererProps) {
+  const e = event.evidence as Record<string, unknown>;
+  const url = String(e.url ?? "");
+  const host = String(e.host ?? "");
+  const title = String(e.title ?? "");
+  return (
+    <>
+      <SectionHeader>bookmark</SectionHeader>
+      {title && <div className="mb-2 text-foreground">{title}</div>}
+      <div className="mb-2 break-all">
+        <a
+          href={url}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 text-accent underline-offset-2 hover:underline"
+        >
+          {url}
+          <ExternalLink className="h-3 w-3" />
+        </a>
+      </div>
+      <div className="mb-2 flex flex-wrap gap-1">{host && <Pill tone="accent">{host}</Pill>}</div>
+      <KVList rows={[["last modified", val(e.last_modified)]]} />
       <CollapsibleRaw data={event.raw} />
     </>
   );
