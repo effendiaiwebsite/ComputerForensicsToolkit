@@ -41,10 +41,12 @@ for pkg in (
     "dissect.util",
     "dissect.cstruct",
     "dissect.hypervisor",
+    "dissect.database",  # ESE reader for IE/Edge WebCacheV01.dat (M15)
     "regipy",
     "regipy.plugins",
     "pyscca",
     "pyevtx",
+    "pymsiecf",  # legacy IE index.dat (MSIE Cache File) reader (M15)
     "Evtx",
     "LnkParse3",
     "yaml",
