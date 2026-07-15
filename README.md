@@ -1,144 +1,71 @@
 # Digital Forensics Triage Toolkit
 
-A portable, cross-platform forensic triage tool that runs from a USB drive. Collects and parses host forensic artifacts, then presents them with dense examiner-grade tables, a timeline view, relationship graphs, and automated suspicious-activity flagging mapped to MITRE ATT&CK.
+I built this for my computer forensics coursework as a single tool that can be run off a USB stick, pointed at a Windows machine or a disk image, and give a quick, readable picture of what happened on that system — what programs ran, who logged in, which USB drives were connected, what was browsed and downloaded, what got deleted, and roughly when it all happened.
 
-> **Status**: In active development. Phase 1 (Windows) underway.
+The motivation was mostly frustration with the usual workflow. A lot of the free tooling in this space is a drawer full of separate single-purpose utilities: one for prefetch, one for browser history, one for USB devices, another for the recycle bin, and so on. Each exports to its own format and you end up stitching timelines together by hand in a spreadsheet. I wanted one place that collects the common Windows artifacts, parses them into a single timeline, and points out the things an examiner would actually stop and look at — with every finding traceable back to the exact artifact it came from, so nothing is a black box.
 
 ## What it does
 
-- **Collects** forensic artifacts from a live host: registry hives, event logs, prefetch, AmCache, ShimCache, USB device history, LNK files, JumpLists, browser history.
-- **Parses** each artifact into a unified normalized event schema.
-- **Flags** suspicious activity using explainable YAML rules mapped to MITRE ATT&CK techniques.
-- **Presents** events in three complementary views:
-  - **Artifact tables** — filterable, sortable, virtualized for 100k+ rows
-  - **Timeline** — multi-track, zoomable, multi-source correlation
-  - **Relationship graphs** — users ↔ devices ↔ processes ↔ time
-- **Reports** — exportable HTML / PDF for case files.
+Point it at a live system, a folder of already-collected artifacts, or an E01 / raw disk image, and it will:
 
-## Roadmap
+- Pull the usual Windows artifacts — registry hives (SYSTEM, SOFTWARE, SAM, NTUSER, UsrClass, AmCache), Windows event logs, prefetch, ShimCache, USB device history, LNK files and JumpLists, browser history (Chrome/Edge/Brave, Firefox, plus legacy IE `index.dat` and the newer WebCache ESE database), and Recycle Bin `$I` records.
+- Normalize all of it into one event schema, so search and the timeline behave the same no matter which artifact an event originally came from.
+- Flag suspicious activity using plain YAML rules mapped to MITRE ATT&CK techniques. The rules are deliberately simple and rule-based rather than machine learning — in a forensic context you have to be able to explain *why* something was flagged, and "the model decided" doesn't survive cross-examination.
+- Show everything in a dense, examiner-style interface: filterable event tables, a zoomable multi-track timeline (with a busy-day detector that highlights unusually active days), a per-device USB view, a browser-history rollup by domain, and a filesystem browser you can export files out of.
+- Produce a self-contained HTML report you can print straight to PDF for a case file.
 
-- **Phase 1** — Windows artifact triage *(in progress)*
-- **Phase 2** — macOS module (KnowledgeC, unified logs, plists, FSEvents, TCC)
-- **Phase 3** — Linux module (journald, auth.log, shell histories, systemd persistence)
+It's read-only against the source the whole way through. Every file it collects is SHA-256 hashed, every action is written to an audit log, and it never modifies the original artifacts.
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for milestone detail.
+## How it's built
 
-## Architecture at a glance
+The shell is a small Tauri (Rust) app, which keeps the binary around 10 MB — small enough to live on a pendrive. It doesn't do any parsing itself; instead it launches a Python "sidecar" process and talks to it with JSON over stdio. All the forensic heavy lifting happens in Python, where the library ecosystem for this stuff (`dissect.target`, `regipy`, and friends) is far stronger than in Rust.
 
 ```
-       +----------------+
-       |  Tauri Shell   |    Rust, ~10MB
-       +-------+--------+
-               | JSON over stdio
-       +-------v--------+
-       | Python Sidecar |    Parsing + rules
-       +-------+--------+
-       |       |        |
-+------v+ +----v---+ +--v-----+
-|Collect| |Parsers | |Rule    |
-|ors    | |        | |Engine  |
-+-------+ +--------+ +--------+
-               |
-        +------v-------+
-        | SQLite Event |
-        |    Store     |
-        +------+-------+
-               |
-       +-------v--------+
-       | Tauri Webview  |
-       | React + shadcn |
-       +----------------+
+  Tauri shell (Rust, UI host)
+        |  JSON over stdio
+  Python sidecar
+    ├── collectors/   read artifacts off a live disk / image
+    ├── parsers/      turn each artifact into normalized events
+    ├── rules/        YAML detection rules, MITRE-mapped
+    └── core/         SQLite event store, timeline, rule engine, reports
 ```
 
-Full detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+The frontend is React + TypeScript (Vite, Tailwind, TanStack Table, ECharts for the timeline). Events live in a SQLite store. Adding support for a new artifact is meant to be just a new collector plus a new parser — everything downstream (UI, search, rules, reports) is artifact-agnostic because it all speaks the same event schema.
 
-## Design principles
+Design docs are under [`docs/`](docs/) — the architecture, the event schema, the detection-rule format, and the phase roadmap.
 
-- **Explainable detections** — rule-based, no ML. Every finding cites a YAML rule and ATT&CK technique.
-- **Information density first** — examiners scan thousands of rows; pretty-but-sparse loses to dense-and-fast.
-- **Forensic soundness** — no writes to source; SHA-256 logged for every collected artifact; full audit log of operations.
-- **OS detection + explicit consent** — boot screen confirms target OS and requests elevation; no silent privilege escalation.
+## Running it
 
-## Quickstart (developers)
+You'll need Rust, Node, and Python 3.11+.
 
-```powershell
-git clone <this-repo>
-cd DigitalForensicsToolkit
-
-# 1. Python sidecar
+```bash
+# Python side
 python -m venv .venv
-.venv/Scripts/pip install -e ".[dev]"
+.venv/Scripts/pip install -e .[dev]     # Windows; use .venv/bin/pip on macOS/Linux
+pytest                                   # run the test suite
 
-# 2. UI dependencies
-cd ui ; npm install ; cd ..
-
-# 3. Run
-cd ui ; npm run tauri dev
+# App (dev mode)
+cd ui
+npm install
+npm run tauri dev
 ```
 
-Pytest: `.venv/Scripts/python -m pytest -q` (currently 148 cases).
-
-## Portable build (USB-ready)
+To produce the portable, no-install build (a folder you can drop on a USB drive and double-click `app.exe`):
 
 ```powershell
-# Produces dist/portable/ — drop the folder onto a USB drive.
-pwsh -File tools/build-portable.ps1
+pwsh -File tools/build-portable.ps1      # output lands in dist/portable/
 ```
 
-The portable layout:
+From there: **Open hive…** parses a single registry hive, **Open directory…** triages a folder of collected artifacts, and **Collect live…** reads straight off a running system or a disk image (live physical-drive access needs Administrator; parsing a hive or an image doesn't).
 
-```
-portable/
-  app.exe              Tauri shell, launches on double-click
-  dft-sidecar/         PyInstaller-bundled parsing core (~80 MB)
-    dft-sidecar.exe
-    _internal/         Python runtime + DLLs + rules/
-  README.txt           quickstart for the recipient
-```
+## Scope and status
 
-No Python, Node, or Tauri SDK is required on the target machine. Live disk
-collection still needs administrator privileges on the host — the app shows
-an in-UI banner when running unelevated.
+This is Phase 1, which is Windows. macOS and Linux modules are on the roadmap but not built yet. It's a *triage* tool by design — the goal is to get oriented fast, not to replace the specialist tools. It doesn't do disk imaging (use FTK Imager), memory analysis (Volatility), or network captures (Wireshark); ask it for those and it points you at the right tool instead.
 
-### Heads-up: antivirus and PyInstaller
+It's been developed and tested against my own machine's artifacts and public training images (the SANS "Wes Mantooth" Vista image, among others). Some of the more interesting bugs came from that older Vista data — its registry stores USB history in a layout a common library choked on, and its IE history is the pre-IE10 `index.dat` format rather than the modern one — so the parsers had to be made a good bit more defensive than the happy-path versions.
 
-PyInstaller-bundled EXEs trip heuristic AV scanners (Norton, Defender,
-Bitdefender) because the bootloader unpacks a Python interpreter at runtime —
-structurally identical to malware packing. The `dist/` and `build/` directories
-should be whitelisted before running `tools/build-portable.ps1`, or the AV will
-quarantine `dft-sidecar.exe` mid-write and break the build.
+## Tech notes
 
-For the final USB drop the recipient will see the same SmartScreen warning;
-click *More info → Run anyway*. Authenticode signing would silence both
-warnings but requires a code-signing certificate, which is out of scope for
-the portfolio build.
-
-## Workflows
-
-| Workflow | What it does | Admin? |
-|---|---|---|
-| **Open hive** | Parse one registry hive (SYSTEM/NTUSER/AmCache/etc.) or browser History DB | No |
-| **Open directory** | Walk a folder of mirrored Windows artifacts and ingest everything found | No |
-| **Collect live** | Read straight off this system's mounted volumes via `dissect.target`, mirror + hash + audit everything, auto-ingest | **Yes** |
-| **Generate report** | Self-contained HTML (case header + MITRE heat-map + SVG timeline + findings + per-artifact section) | No |
-
-Phase 1 covers: registry (SYSTEM/SOFTWARE/SAM/SECURITY/NTUSER/UsrClass/AmCache),
-event logs (.evtx), Prefetch, ShimCache, AmCache execution evidence, LNK,
-JumpLists, Chrome/Edge/Brave History. 17 MITRE-mapped YAML rules ship in
-`rules/`; the engine evaluates them automatically after every triage.
-
-## Distribution
-
-Each OS gets its own binary on the USB:
-
-- Windows: portable `app.exe` + `dft-sidecar/` folder (this milestone)
-- macOS (Phase 2): signed + notarized `.app` in a `.dmg`
-- Linux (Phase 3): `.AppImage`
-
-Windows SmartScreen will warn on first launch since the build isn't
-Authenticode-signed — click *More info → Run anyway*. Signing requires a
-code-signing certificate which is out of scope for the portfolio build.
-
-## License
-
-TBD.
+- Python: type-hinted, `ruff` for linting, `pytest` for tests (200+ covering parsers, rules, and the sidecar ops).
+- No writes to source artifacts; SHA-256 on everything collected; full audit trail.
+- Detection rules are YAML, and every rule maps to at least one MITRE ATT&CK technique.
