@@ -72,6 +72,7 @@ def generate_report(
         _render_timeline(timeline_points, events_summary["by_source_artifact"]),
         _render_per_day(store, collection_id),
         _render_findings(findings),
+        _render_deletions(store, collection_id),
         _render_per_artifact(per_artifact),
         _render_footer(meta),
     ])
@@ -412,6 +413,147 @@ def _render_findings(findings: list[dict[str, Any]]) -> str:
 """
 
 
+_CONFIDENCE_ORDER = ("direct", "likely", "ambiguous", "unknown")
+_METHOD_LABELS = {
+    "recycle_bin": "Recycle Bin",
+    "usn_journal": "USN journal",
+    "mft_unallocated": "MFT (unallocated)",
+}
+_DELETIONS_RECENT_LIMIT = 50
+
+_CONFIDENCE_EXPLAINER = (
+    "<strong>How to read the user column.</strong> "
+    "<em>direct</em>: the artifact itself names the account (the file sat in "
+    "that user's <code>$Recycle.Bin\\&lt;SID&gt;</code> folder). "
+    "<em>likely</em>: exactly one interactive logon session (Security 4624 "
+    "type 2/7/10/11, closed by 4634/4647) covered the deletion time, or for an "
+    "MFT record the file owner is the only interactive user in the logs. "
+    "<em>ambiguous</em>: several users had sessions open, or the time is only "
+    "an upper bound; the owner is named when it is one of them. "
+    "<em>unknown</em>: no session evidence covers the time. The reason column "
+    "states exactly which records the attribution rests on."
+)
+
+_DELETION_LIMITS = (
+    "<strong>Limits.</strong> No carving: content of files whose clusters were "
+    "reused is not recovered. The USN journal has a finite retention window "
+    "(commonly days to weeks); older deletions survive only as MFT bounds or not "
+    "at all. An unallocated <code>$MFT</code> record gives a <em>last existed "
+    "by</em> time (its last <code>$STANDARD_INFORMATION</code> change), not a "
+    "deletion time, shown with a &le; prefix. For USN and MFT rows the user is "
+    "inferred from who was logged on; a service or scheduled task running as "
+    "another account can delete files during a user's session, so a "
+    "<em>likely</em> label is an inference, not an observation."
+)
+
+
+def _gather_deletions(store: EventStore, collection_id: str) -> dict[str, Any]:
+    recent = store.query_deletions(
+        collection_id=collection_id, limit=_DELETIONS_RECENT_LIMIT,
+        sort_by="deleted_at", sort_dir="desc",
+    )
+    bursts = store.query_events(
+        collection_id=collection_id, event_type="file_delete_burst",
+        sort_by="timestamp", sort_dir="asc", limit=200,
+    )
+    return {
+        "total": store.count_deletions(collection_id=collection_id),
+        "by_method": store.deletions_by_method(collection_id=collection_id),
+        "by_confidence": store.deletions_by_confidence(collection_id=collection_id),
+        "by_actor": store.deletions_by_actor(collection_id=collection_id),
+        "exact": store.count_deletions(collection_id=collection_id, time_basis="exact"),
+        "recent": recent,
+        "bursts": bursts,
+    }
+
+
+def _render_deletions(store: EventStore, collection_id: str) -> str:
+    data = _gather_deletions(store, collection_id)
+    total = data["total"]
+    if not total:
+        return (
+            '<section class="deletions"><h2>Deleted files</h2>'
+            '<div class="muted">No Recycle Bin, USN journal or $MFT deletion '
+            'records in this collection.</div>'
+            f'<p class="small muted">{_DELETION_LIMITS}</p></section>'
+        )
+    upper = total - data["exact"]
+    method_chips = "".join(
+        f'<span class="chip">{esc(_METHOD_LABELS.get(m, m))}: <strong>{c:,}</strong></span>'
+        for m, c in data["by_method"].items()
+    )
+    conf_chips = "".join(
+        f'<span class="chip conf-{c}">{c}: <strong>{data["by_confidence"].get(c, 0):,}</strong>'
+        f'</span>'
+        for c in _CONFIDENCE_ORDER if data["by_confidence"].get(c)
+    )
+    actor_rows = "".join(
+        f"<tr><td>{esc(a['actor_user'] or '—')}</td>"
+        f"<td><span class='chip conf-{esc(a['actor_confidence'])}'>"
+        f"{esc(a['actor_confidence'])}</span></td>"
+        f"<td class='r'>{a['count']:,}</td></tr>"
+        for a in data["by_actor"]
+    )
+    recent_rows = "".join(
+        f"<tr><td class='mono small'>"
+        f"{'&le; ' if r['time_basis'] == 'upper_bound' else ''}{esc(r['deleted_at'] or '—')}</td>"
+        f"<td class='mono small' title='{esc(r['actor_reason'])}'>{esc(r['path'] or r['name'])}"
+        f"</td>"
+        f"<td>{esc(_METHOD_LABELS.get(r['method'], r['method']))}</td>"
+        f"<td>{esc(r['actor_user'] or '—')}</td>"
+        f"<td><span class='chip conf-{esc(r['actor_confidence'])}'>"
+        f"{esc(r['actor_confidence'])}</span></td>"
+        f"<td class='small'>{esc(r['recoverable_hint'] or 'unknown')}</td></tr>"
+        for r in data["recent"]
+    )
+    burst_rows = "".join(
+        f"<tr><td class='mono small'>{esc(b['evidence'].get('window_start'))} → "
+        f"{esc(b['evidence'].get('window_end'))}</td>"
+        f"<td class='r'>{int(b['evidence'].get('count') or 0):,}</td>"
+        f"<td>{esc(_METHOD_LABELS.get(b['evidence'].get('method'), b['evidence'].get('method')))}"
+        f"</td>"
+        f"<td>{esc(b['evidence'].get('actor_user') or '—')}</td>"
+        f"<td class='mono small'>"
+        f"{esc('; '.join((b['evidence'].get('sample_paths') or [])[:3]))}</td></tr>"
+        for b in data["bursts"]
+    )
+    bursts_html = (
+        f'<h3>Deletion bursts <span class="muted">({len(data["bursts"])})</span></h3>'
+        f'<table class="artifact-table"><thead><tr><th>Window (UTC)</th><th class="r">Files'
+        f'</th><th>Method</th><th>User</th><th>Sample paths</th></tr></thead>'
+        f'<tbody>{burst_rows}</tbody></table>'
+        if data["bursts"] else
+        '<div class="muted small">No deletion bursts (&ge; 20 deletions by one method '
+        'within 120 s).</div>'
+    )
+    return f"""
+<section class="deletions">
+  <h2>Deleted files <span class="muted">({total:,} total)</span></h2>
+  <div class="cards">
+    <div class="card"><div class="big">{total:,}</div><div class="muted">deleted files</div></div>
+    <div class="card"><div class="big">{data['exact']:,}</div><div class="muted">exact time</div>
+      <div class="small muted">{upper:,} upper-bound (MFT)</div></div>
+    <div class="card"><div class="muted">By method</div><div class="chips">{method_chips}</div>
+      <div class="muted" style="margin-top:6px">By confidence</div>
+      <div class="chips">{conf_chips}</div></div>
+  </div>
+  <h3>By user</h3>
+  <table class="artifact-table"><thead><tr><th>User</th><th>Confidence</th>\
+<th class="r">Deletions</th></tr></thead><tbody>{actor_rows}</tbody></table>
+  <h3>Most recent deletions <span class="muted">(up to {_DELETIONS_RECENT_LIMIT}; \
+hover a path for the attribution reason)</span></h3>
+  <table class="artifact-table">
+    <thead><tr><th>Time (UTC)</th><th>Path</th><th>Method</th><th>User</th>\
+<th>Confidence</th><th>Recoverable</th></tr></thead>
+    <tbody>{recent_rows}</tbody>
+  </table>
+  {bursts_html}
+  <p class="small muted">{_CONFIDENCE_EXPLAINER}</p>
+  <p class="small muted">{_DELETION_LIMITS}</p>
+</section>
+"""
+
+
 def _render_per_artifact(per_artifact: list[dict[str, Any]]) -> str:
     if not per_artifact:
         return ""
@@ -637,6 +779,10 @@ _CSS = """
     border-color: rgba(98,185,247,0.4); }
   .chip.sev-low { background: rgba(255,255,255,0.06); color: var(--muted);
     border-color: var(--border); }
+  .chip.conf-direct { background: rgba(95,169,255,0.25); border-color: var(--accent); }
+  .chip.conf-likely { border-color: var(--accent); color: var(--accent); }
+  .chip.conf-ambiguous { border-style: dashed; color: var(--warn); border-color: var(--warn); }
+  .chip.conf-unknown { color: var(--muted); }
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   .kvtable { width: 100%; border-collapse: collapse; font-size: 12px; }
   .kvtable td { padding: 3px 6px; border-bottom: 1px solid var(--border); }

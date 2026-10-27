@@ -1,0 +1,32 @@
+[
+  {
+    "event_id": "p1",
+    "event_type": "program_execution",
+    "source_artifact": "prefetch",
+    "evidence": { "executable_filename": "SDELETE64.EXE" }
+  },
+  {
+    "event_id": "p2",
+    "event_type": "program_execution",
+    "source_artifact": "registry.amcache",
+    "evidence": { "program_path": "C:\\Program Files\\CCleaner\\CCleaner64.exe" }
+  },
+  {
+    "event_id": "p3",
+    "event_type": "program_execution",
+    "source_artifact": "registry.ntuser",
+    "evidence": { "program_name": "C:\\Users\\alice\\Downloads\\Eraser.exe" }
+  },
+  {
+    "event_id": "p4",
+    "event_type": "program_execution",
+    "source_artifact": "registry.system",
+    "evidence": { "program_path": "C:\\Windows\\System32\\cipher.exe" }
+  },
+  {
+    "event_id": "p5",
+    "event_type": "program_execution",
+    "source_artifact": "prefetch",
+    "evidence": { "executable_filename": "BLEACHBIT_CONSOLE.EXE" }
+  }
+]

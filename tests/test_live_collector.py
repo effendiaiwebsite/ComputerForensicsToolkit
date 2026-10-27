@@ -192,6 +192,61 @@ def test_collect_copies_hashes_and_audits(tmp_path: Path) -> None:
     # equals snap.total once the run finishes.
     assert snap.completed == snap.total
     assert snap.by_category["registry"] >= 3
+    # The fake target exposes no NTFS internals: NTFS metadata is reported as
+    # absent (one skipped audit record), never as an error.
+    assert result.ntfs_meta == {
+        "mft_path": None, "usnjrnl_path": None, "sds_path": None,
+        "drive_letter": "C:", "errors": [],
+    }
+    assert any(r["extra"].get("label") == "ntfs_meta" for r in records if r["status"] == "skipped")
+
+
+class _FakeNtfsTarget(FakeTarget):
+    """FakeTarget plus one dissect-shaped NTFS filesystem for ntfs_meta collection."""
+
+    def __init__(self, fs_root: Path, users: list[FakeUser], *, mft: bytes, j: bytes) -> None:
+        super().__init__(fs_root, users)
+        import io
+        from types import SimpleNamespace
+
+        ntfs = SimpleNamespace(
+            mft=SimpleNamespace(fh=io.BytesIO(mft)),
+            usnjrnl=SimpleNamespace(fh=io.BytesIO(j)),
+            secure=None,
+        )
+        ntfs_fs = SimpleNamespace(ntfs=ntfs, path=self.fs.path)
+        self.filesystems = [ntfs_fs]
+
+
+def test_collect_live_includes_ntfs_metadata(tmp_path: Path) -> None:
+    src_root = tmp_path / "src"
+    dest_root = tmp_path / "dest"
+    src_root.mkdir()
+    dest_root.mkdir()
+    _materialize(src_root, [FakeFile("Windows/System32/config/SYSTEM", b"sys")])
+    audit = AuditLog(dest_root / "audit.jsonl")
+    progress = ProgressTracker()
+    progress.start("c", label="t", total=0)
+
+    target = _FakeNtfsTarget(src_root, [], mft=b"FILE" * 256, j=b"J" * 100)
+    result = collect_live(
+        target, collection_id="c", dest_dir=dest_root, audit=audit, progress=progress,
+        source_label="fake://ntfs",
+    )
+
+    assert result.files_collected == 3  # SYSTEM + $MFT + $J
+    assert result.bytes_collected == 3 + 1024 + 100
+    assert result.errors == 0
+    assert result.ntfs_meta["mft_path"] == str(dest_root / "ntfs" / "$MFT")
+    assert result.ntfs_meta["usnjrnl_path"] == str(dest_root / "ntfs" / "$J")
+    assert result.ntfs_meta["sds_path"] is None
+    assert (dest_root / "ntfs" / "$MFT").read_bytes() == b"FILE" * 256
+    ok = [r for r in audit.read_all() if r["status"] == "ok"]
+    labels = {r["extra"]["label"] for r in ok}
+    assert {"$MFT", "$UsnJrnl:$J", "SYSTEM hive"} <= labels
+    snap = progress.get("c")
+    assert snap.completed == snap.total
+    assert snap.by_category["ntfs_meta"] == 1
 
 
 def test_missing_artifacts_are_skipped_not_failed(tmp_path: Path) -> None:

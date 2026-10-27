@@ -224,3 +224,79 @@ def test_sidecar_generate_report_validates_inputs() -> None:
     r = d.dispatch({"op": "generate_report", "collection_id": "c"})
     assert r["ok"] is False
     assert "output_path" in r["error"]
+
+
+# --- Deleted files section ---------------------------------------------------
+
+
+def _deletion_event(method: str, path: str, ts: str, **extra: object) -> object:
+    evidence: dict[str, object] = {
+        "original_path": path, "deleted_name": path.rsplit("\\", 1)[-1], "deleted_size": 5,
+        "deletion_method": method, "recoverable_hint": "unknown", "is_directory": False,
+    }
+    evidence.update(extra)
+    src = {"recycle_bin": "recycle_bin", "usn_journal": "usnjrnl", "mft_unallocated": "mft"}
+    return make_event(
+        host_os="windows", host_id="H", source_artifact=src[method], source_path="/p",
+        event_type="file_delete", summary=f"Deleted: {path}", evidence=evidence,
+        collection_id="dels", parser_version="v", timestamp=ts,
+        timestamp_source="inferred" if method == "mft_unallocated" else None,
+    )
+
+
+def test_deleted_files_section_renders_rows_confidence_and_limits() -> None:
+    from core.deletions import build_deletions
+
+    store = EventStore()
+    store.register_collection(
+        collection_id="dels", host_id="H", host_os="windows",
+        created_at="2026-06-13T12:00:00Z", note="deletions fixture",
+    )
+    sid = "S-1-5-21-9-9-9-1001"
+    store.insert_events([
+        make_event(
+            host_os="windows", host_id="H", source_artifact="registry.sam", source_path="/p",
+            event_type="account_change", summary="alice",
+            evidence={"sid": sid, "username": "alice"},
+            collection_id="dels", parser_version="v",
+        ),
+        _deletion_event("recycle_bin", r"C:\Users\alice\binned.docx", "2026-06-10T09:00:00Z",
+                        actor_sid=sid, owner_sid=sid, recovered_name="$R1.docx",
+                        recoverable_hint="recycle_bin_blob"),
+        _deletion_event("mft_unallocated", r"C:\Users\alice\bounded.txt", "2026-06-09T09:00:00Z"),
+        *[
+            _deletion_event("usn_journal", rf"C:\bulk\{i}.tmp", f"2026-06-11T10:00:{i:02d}Z")
+            for i in range(25)
+        ],
+    ])
+    summary = build_deletions(store, "dels")
+    assert summary.bursts == 1
+
+    html = generate_report(store, "dels", case_name="C", examiner="E")
+    section = re.search(r'<section class="deletions">.*?</section>', html, re.S)
+    assert section is not None
+    text = section.group(0)
+    assert "Deleted files" in text
+    assert "27 total" in text
+    assert "Recycle Bin: <strong>1</strong>" in text
+    assert "USN journal: <strong>25</strong>" in text
+    assert "binned.docx" in text and "alice" in text
+    assert "conf-direct" in text and "conf-unknown" in text
+    assert "&le; 2026-06-09T09:00:00Z" in text  # MFT upper bound is marked
+    assert "recycle_bin_blob" in text
+    assert "Deletion bursts" in text and "2026-06-11T10:00:00Z" in text
+    assert "How to read the user column" in text
+    assert "No carving" in text and "finite retention window" in text
+    assert "inferred from who was logged on" in text
+    assert "Found in the Recycle Bin folder" in text  # reason surfaces as a tooltip
+
+
+def test_deleted_files_section_when_empty_still_states_limits() -> None:
+    store = EventStore()
+    store.register_collection(
+        collection_id="nodels", host_id="H", host_os="windows",
+        created_at="2026-06-13T12:00:00Z", note="empty",
+    )
+    html = generate_report(store, "nodels", case_name="C", examiner="E")
+    assert "No Recycle Bin, USN journal or $MFT deletion records" in html
+    assert "No carving" in html

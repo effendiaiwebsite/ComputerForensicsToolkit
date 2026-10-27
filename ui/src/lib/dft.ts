@@ -214,6 +214,75 @@ export async function queryBrowserDomains(args: {
   return invoke<BrowserDomainsResult>("query_browser_domains", { args });
 }
 
+export type DeletionMethod = "recycle_bin" | "usn_journal" | "mft_unallocated";
+export type ActorConfidence = "direct" | "likely" | "ambiguous" | "unknown";
+
+export type Deletion = {
+  deletion_id: string;
+  collection_id: string;
+  event_id: string;
+  deleted_at: string | null;
+  time_basis: "exact" | "upper_bound";
+  path: string;
+  name: string;
+  size: number | null;
+  is_directory: number | boolean;
+  method: DeletionMethod;
+  owner_sid: string | null;
+  owner_user: string | null;
+  actor_user: string | null;
+  actor_sid: string | null;
+  actor_confidence: ActorConfidence;
+  actor_reason: string | null;
+  recoverable_hint: string | null;
+  source_path: string | null;
+};
+
+export type DeletionActorCount = {
+  actor_user: string | null;
+  actor_confidence: ActorConfidence;
+  count: number;
+};
+
+export type DeletionsResult = {
+  ok: boolean;
+  deletions: Deletion[];
+  total: number;
+  by_method: Record<string, number>;
+  by_actor: DeletionActorCount[];
+  bursts: number;
+  error?: string;
+};
+
+export type QueryDeletionsArgs = {
+  collection_id: string;
+  limit?: number;
+  offset?: number;
+  method?: DeletionMethod;
+  actor_user?: string;
+  actor_confidence?: ActorConfidence;
+  path_contains?: string;
+  sort_by?: "deleted_at" | "path" | "actor_user";
+  sort_dir?: "asc" | "desc";
+};
+
+export async function queryDeletions(args: QueryDeletionsArgs): Promise<DeletionsResult> {
+  return invoke<DeletionsResult>("query_deletions", { args });
+}
+
+export type BuildDeletionsResult = {
+  ok: boolean;
+  total: number;
+  by_method: Record<string, number>;
+  by_actor_confidence: Record<string, number>;
+  bursts: number;
+  error?: string;
+};
+
+export async function buildDeletions(args: { collection_id: string }): Promise<BuildDeletionsResult> {
+  return invoke<BuildDeletionsResult>("build_deletions", { args });
+}
+
 export type ActivityDay = {
   date: string;
   count: number;

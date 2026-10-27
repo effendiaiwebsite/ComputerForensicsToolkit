@@ -8,8 +8,9 @@ The motivation was mostly frustration with the usual workflow. A lot of the free
 
 Point it at a live system, a folder of already-collected artifacts, or an E01 / raw disk image, and it will:
 
-- Pull the usual Windows artifacts — registry hives (SYSTEM, SOFTWARE, SAM, NTUSER, UsrClass, AmCache), Windows event logs, prefetch, ShimCache, USB device history, LNK files and JumpLists, browser history (Chrome/Edge/Brave, Firefox, plus legacy IE `index.dat` and the newer WebCache ESE database), and Recycle Bin `$I` records.
+- Pull the usual Windows artifacts — registry hives (SYSTEM, SOFTWARE, SAM, NTUSER, UsrClass, AmCache), Windows event logs, prefetch, ShimCache, USB device history, LNK files and JumpLists, browser history (Chrome/Edge/Brave, Firefox, plus legacy IE `index.dat` and the newer WebCache ESE database), Recycle Bin `$I` records, the NTFS USN change journal and unallocated `$MFT` records.
 - Normalize all of it into one event schema, so search and the timeline behave the same no matter which artifact an event originally came from.
+- Answer "who deleted what, and when": Recycle Bin, USN journal and `$MFT` evidence is merged into one Deleted files view, each row carrying the actor with a confidence label (`direct`, `likely`, `ambiguous`, `unknown`) and a sentence saying which records the attribution rests on. Twenty or more deletions inside two minutes are flagged as a burst, and LNK / JumpList / Prefetch entries that point at files no longer on the volume are marked as ghost references.
 - Flag suspicious activity using plain YAML rules mapped to MITRE ATT&CK techniques. The rules are deliberately simple and rule-based rather than machine learning — in a forensic context you have to be able to explain *why* something was flagged, and "the model decided" doesn't survive cross-examination.
 - Show everything in a dense, examiner-style interface: filterable event tables, a zoomable multi-track timeline (with a busy-day detector that highlights unusually active days), a per-device USB view, a browser-history rollup by domain, and a filesystem browser you can export files out of.
 - Produce a self-contained HTML report you can print straight to PDF for a case file.
@@ -61,6 +62,14 @@ From there: **Open hive…** parses a single registry hive, **Open directory…*
 ## Scope and status
 
 This is Phase 1, which is Windows. macOS and Linux modules are on the roadmap but not built yet. It's a *triage* tool by design — the goal is to get oriented fast, not to replace the specialist tools. It doesn't do disk imaging (use FTK Imager), memory analysis (Volatility), or network captures (Wireshark); ask it for those and it points you at the right tool instead.
+
+A few honest limits on the deleted-file side, which the report also states:
+
+- No carving. If a deleted file's clusters were reused, its content is gone; the tool reports that the file existed, not what was in it.
+- The USN journal has a finite retention window (commonly days to weeks). Older deletions survive only as `$MFT` bounds, or not at all.
+- An unallocated `$MFT` record gives a *last existed by* time (its last `$STANDARD_INFORMATION` change), not a deletion time. Those rows are shown with a `≤` prefix.
+- Only the Recycle Bin names the deleter directly. For USN and `$MFT` deletions the "who" is inferred from the interactive logon sessions (Security 4624/4634/4647) that cover the deletion time, so a service or scheduled task running as another account during a user's session will be attributed to that user. The confidence label and reason text say exactly what the inference rests on; a `likely` is an inference, not an observation.
+- The ghost-reference check needs the volume itself (a live disk, an image, or a complete directory mirror of `C:\`); a folder holding only collected artifacts is skipped rather than guessed at, so nothing is reported missing by mistake.
 
 It's been developed and tested against my own machine's artifacts and public training images (the SANS "Wes Mantooth" Vista image, among others). Some of the more interesting bugs came from that older Vista data — its registry stores USB history in a layout a common library choked on, and its IE history is the pre-IE10 `index.dat` format rather than the modern one — so the parsers had to be made a good bit more defensive than the happy-path versions.
 

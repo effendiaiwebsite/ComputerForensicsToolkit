@@ -18,9 +18,15 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from collectors.windows.browser import BrowserKind, detect_browser_kind
 from collectors.windows.hive import HiveKind
+
+# NTFS metadata streams extracted by collectors.windows.ntfs_meta (or by hand
+# with a raw-disk tool). Not hives: discover_hives() leaves them out and
+# discover_ntfs_meta() surfaces them.
+NtfsMetaKind = Literal["mft", "usnjrnl", "sds"]
 
 _NAME_TO_KIND: dict[str, HiveKind] = {
     "SYSTEM": "system",
@@ -30,6 +36,18 @@ _NAME_TO_KIND: dict[str, HiveKind] = {
     "USRCLASS.DAT": "usrclass",
     "AMCACHE.HVE": "amcache",
 }
+
+_NTFS_META_NAMES: dict[str, NtfsMetaKind] = {
+    "$MFT": "mft",
+    "$J": "usnjrnl",
+    "$USNJRNL$J": "usnjrnl",
+    "$USNJRNL_$J": "usnjrnl",
+    "$USNJRNL:$J": "usnjrnl",
+    "$SDS": "sds",
+    "$SECURE_$SDS": "sds",
+    "$SECURE:$SDS": "sds",
+}
+_NTFS_META_KINDS: frozenset[str] = frozenset(_NTFS_META_NAMES.values())
 
 # Allow short suffixes so reg-save dumps like "SYSTEM_dump.hve" still match.
 _PREFIX_TO_KIND: dict[str, HiveKind] = {
@@ -53,8 +71,10 @@ class DiscoveredHive:
 _NON_HIVE_SUFFIX = re.compile(r"^\.(evtx|log\d*|blf|regtrans-ms)$", re.IGNORECASE)
 
 
-def _classify(p: Path) -> HiveKind | None:
+def _classify(p: Path) -> HiveKind | NtfsMetaKind | None:
     upper = p.name.upper()
+    if upper in _NTFS_META_NAMES:
+        return _NTFS_META_NAMES[upper]
     if _NON_HIVE_SUFFIX.match(p.suffix):
         return None
     if upper in _NAME_TO_KIND:
@@ -87,13 +107,45 @@ def discover_hives(directory: str | Path) -> list[DiscoveredHive]:
         if not entry.is_file():
             continue
         kind = _classify(entry)
-        if kind is None:
+        if kind is None or kind in _NTFS_META_KINDS:
             continue
         user = _user_from_path(entry, root) if kind in {"ntuser", "usrclass"} else None
         found.append(DiscoveredHive(path=entry, kind=kind, user_hint=user))
 
     found.sort(key=lambda h: (_KIND_ORDER.get(h.kind, 99), str(h.path)))
     return found
+
+
+def discover_ntfs_meta(directory: str | Path) -> dict[str, Path | None]:
+    """Locate extracted ``$MFT`` / ``$J`` / ``$SDS`` under the directory.
+
+    Returns ``{"mft": Path|None, "usnjrnl": Path|None, "sds": Path|None}``.
+    When several candidates exist (e.g. per-volume dumps), one inside an
+    ``ntfs/`` folder (the live collector's layout) wins, then the shallowest.
+    """
+    root = Path(directory).resolve()
+    if not root.is_dir():
+        raise NotADirectoryError(f"not a directory: {root}")
+
+    best: dict[str, tuple[tuple[int, int, str], Path]] = {}
+    for entry in root.rglob("*"):
+        if not entry.is_file():
+            continue
+        kind = _NTFS_META_NAMES.get(entry.name.upper())
+        if kind is None:
+            continue
+        rel = entry.relative_to(root)
+        in_ntfs_dir = entry.parent.name.lower() == "ntfs"
+        rank = (0 if in_ntfs_dir else 1, len(rel.parts), str(rel).lower())
+        current = best.get(kind)
+        if current is None or rank < current[0]:
+            best[kind] = (rank, entry)
+
+    return {
+        "mft": best["mft"][1] if "mft" in best else None,
+        "usnjrnl": best["usnjrnl"][1] if "usnjrnl" in best else None,
+        "sds": best["sds"][1] if "sds" in best else None,
+    }
 
 
 @dataclass

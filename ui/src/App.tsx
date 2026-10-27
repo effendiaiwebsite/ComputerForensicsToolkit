@@ -7,8 +7,9 @@ import {
   type ColumnDef,
   type SortingState,
 } from "@tanstack/react-table";
-import { Activity, AlertTriangle, ArrowDown, ArrowUp, FileText, Files, FolderOpen, FolderTree, Globe, HardDrive, Layers, ShieldAlert, Table2, Usb, X } from "lucide-react";
+import { Activity, AlertTriangle, ArrowDown, ArrowUp, FileText, Files, FolderOpen, FolderTree, Globe, HardDrive, Layers, ShieldAlert, Table2, Trash2, Usb, X } from "lucide-react";
 
+import { DeletedFiles, type DeletionFilters } from "@/components/DeletedFiles";
 import { DetailPane } from "@/components/DetailPane";
 import { FilesBrowser } from "@/components/FilesBrowser";
 import { BusyDayStrip } from "@/components/BusyDayStrip";
@@ -28,6 +29,7 @@ import {
   pingSidecar,
   queryActivityByDay,
   queryBrowserDomains,
+  queryDeletions,
   queryEvents,
   queryFindings,
   queryProgramExecutionComposite,
@@ -38,6 +40,7 @@ import {
   runTriageHive,
   type ActivityDay,
   type BrowserDomain,
+  type DeletionsResult,
   type ExecutionCompositeRow,
   type Finding,
   type ForensicEvent,
@@ -49,7 +52,7 @@ import {
 } from "@/lib/dft";
 import { cn } from "@/lib/utils";
 
-type ViewMode = "events" | "execution" | "timeline" | "findings" | "devices" | "browser" | "files";
+type ViewMode = "events" | "execution" | "timeline" | "findings" | "devices" | "deleted" | "browser" | "files";
 
 const SEVERITY_BADGE: Record<Finding["severity"], string> = {
   critical: "bg-error/20 text-error border-error/40",
@@ -59,6 +62,8 @@ const SEVERITY_BADGE: Record<Finding["severity"], string> = {
 };
 
 const SEVERITY_ORDER: Finding["severity"][] = ["critical", "high", "medium", "low"];
+
+const EMPTY_DELETION_FILTERS: DeletionFilters = { method: "", confidence: "", user: "", path: "" };
 
 type SidecarState =
   | { kind: "idle" }
@@ -227,6 +232,10 @@ export default function App() {
   const [activeSeverity, setActiveSeverity] = useState<Set<Finding["severity"]>>(new Set());
   const [usbDevices, setUsbDevices] = useState<UsbDevice[]>([]);
   const [browserDomains, setBrowserDomains] = useState<BrowserDomain[]>([]);
+  const [deletions, setDeletions] = useState<DeletionsResult | null>(null);
+  const [deletionFilters, setDeletionFilters] = useState<DeletionFilters>(EMPTY_DELETION_FILTERS);
+  const [debouncedDeletionText, setDebouncedDeletionText] = useState({ user: "", path: "" });
+  const [deletionSorting, setDeletionSorting] = useState<SortingState>([{ id: "deleted_at", desc: true }]);
   const [reportOpen, setReportOpen] = useState(false);
   const [elevated, setElevated] = useState<boolean | null>(null);
   const [liveOpen, setLiveOpen] = useState(false);
@@ -249,6 +258,8 @@ export default function App() {
     setFindingsBySeverity({});
     setTimelineFocus(null);
     setSelectedDay(null);
+    setDeletions(null);
+    setDeletionFilters(EMPTY_DELETION_FILTERS);
   }, []);
 
   useEffect(() => {
@@ -318,6 +329,17 @@ export default function App() {
     return () => clearTimeout(id);
   }, [filter]);
 
+  // Only the free-text deletion filters are debounced; the selects apply at once.
+  const deletionUser = deletionFilters.user;
+  const deletionPath = deletionFilters.path;
+  useEffect(() => {
+    const id = setTimeout(
+      () => setDebouncedDeletionText({ user: deletionUser, path: deletionPath }),
+      250,
+    );
+    return () => clearTimeout(id);
+  }, [deletionUser, deletionPath]);
+
   // Depends on collectionId, not the collection object: the events branch
   // below refreshes the counts on `collection`, which must not re-trigger this.
   const refresh = useCallback(async () => {
@@ -374,6 +396,34 @@ export default function App() {
           setUsbDevices(res.devices);
         } else {
           setSidecar({ kind: "error", message: res.error ?? "usb devices query failed" });
+        }
+      } catch (err) {
+        setSidecar({ kind: "error", message: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
+    if (view === "deleted") {
+      const delSort = deletionSorting[0];
+      const sort_by =
+        delSort && (delSort.id === "deleted_at" || delSort.id === "path" || delSort.id === "actor_user")
+          ? delSort.id
+          : "deleted_at";
+      try {
+        const res = await queryDeletions({
+          collection_id: collectionId,
+          limit: 500,
+          offset: 0,
+          method: deletionFilters.method || undefined,
+          actor_confidence: deletionFilters.confidence || undefined,
+          actor_user: debouncedDeletionText.user.trim() || undefined,
+          path_contains: debouncedDeletionText.path.trim() || undefined,
+          sort_by,
+          sort_dir: delSort ? (delSort.desc ? "desc" : "asc") : "desc",
+        });
+        if (res.ok) {
+          setDeletions(res);
+        } else {
+          setSidecar({ kind: "error", message: res.error ?? "deletions query failed" });
         }
       } catch (err) {
         setSidecar({ kind: "error", message: err instanceof Error ? err.message : String(err) });
@@ -451,7 +501,18 @@ export default function App() {
     } catch (err) {
       setSidecar({ kind: "error", message: err instanceof Error ? err.message : String(err) });
     }
-  }, [collectionId, view, debouncedFilter, sorting, activeTypes, activeSeverity]);
+  }, [
+    collectionId,
+    view,
+    debouncedFilter,
+    sorting,
+    activeTypes,
+    activeSeverity,
+    deletionFilters.method,
+    deletionFilters.confidence,
+    debouncedDeletionText,
+    deletionSorting,
+  ]);
 
   useEffect(() => {
     void refresh();
@@ -735,6 +796,25 @@ export default function App() {
             </button>
             <button
               type="button"
+              onClick={() => setView("deleted")}
+              className={cn(
+                "px-3 py-1.5 text-xs font-mono inline-flex items-center gap-1.5 border-l border-border",
+                view === "deleted"
+                  ? "bg-accent text-accent-foreground"
+                  : "bg-muted/30 text-muted-foreground hover:text-foreground",
+              )}
+              disabled={!collection}
+            >
+              <Trash2 className="h-3 w-3" />
+              Deleted files
+              {deletions && deletions.total > 0 ? (
+                <span className="rounded bg-background/40 border border-border px-1.5 py-0 text-[10px]">
+                  {deletions.total.toLocaleString()}
+                </span>
+              ) : null}
+            </button>
+            <button
+              type="button"
               onClick={() => setView("browser")}
               className={cn(
                 "px-3 py-1.5 text-xs font-mono inline-flex items-center gap-1.5 border-l border-border",
@@ -841,7 +921,7 @@ export default function App() {
         </div>
       </div>
 
-      {view !== "execution" && view !== "devices" && view !== "browser" && view !== "files" && collection && chipEntries.length > 0 && (
+      {view !== "execution" && view !== "devices" && view !== "deleted" && view !== "browser" && view !== "files" && collection && chipEntries.length > 0 && (
         <div className="flex flex-wrap gap-2 border-b border-border bg-muted/5 px-4 py-2">
           {chipEntries.map(([type, count]) => (
             <Chip
@@ -1042,6 +1122,28 @@ export default function App() {
                   }
                 }}
               />
+            ) : view === "deleted" ? (
+              <DeletedFiles
+                result={deletions}
+                hasCollection={!!collection}
+                filters={deletionFilters}
+                onFiltersChange={setDeletionFilters}
+                sorting={deletionSorting}
+                onSortingChange={setDeletionSorting}
+                selectedEventId={selected?.event_id ?? null}
+                onSelect={async (eventId) => {
+                  try {
+                    const res = await getEvent(eventId);
+                    if (res.ok && res.event) setSelected(res.event);
+                    else setSidecar({ kind: "error", message: res.error ?? "event not found" });
+                  } catch (err) {
+                    setSidecar({
+                      kind: "error",
+                      message: err instanceof Error ? err.message : String(err),
+                    });
+                  }
+                }}
+              />
             ) : view === "browser" ? (
               <BrowserTable domains={browserDomains} hasCollection={!!collection} />
             ) : (
@@ -1067,6 +1169,8 @@ export default function App() {
           ? `findings: ${findings.length} of ${findingsTotal} · M9`
           : view === "devices"
           ? `usb devices: ${usbDevices.length} · findings: ${findingsTotal} · M14`
+          : view === "deleted"
+          ? `deletions: ${deletions?.deletions.length ?? 0} of ${deletions?.total ?? 0} · bursts: ${deletions?.bursts ?? 0} · findings: ${findingsTotal} · M16`
           : view === "browser"
           ? `browser hosts: ${browserDomains.length} · findings: ${findingsTotal} · M15`
           : `image filesystem browser · M14`}

@@ -1,0 +1,26 @@
+[
+  {
+    "event_id": "n1",
+    "event_type": "program_execution",
+    "source_artifact": "prefetch",
+    "evidence": { "executable_filename": "CHROME.EXE" }
+  },
+  {
+    "event_id": "n2",
+    "event_type": "program_execution",
+    "source_artifact": "registry.amcache",
+    "evidence": { "program_path": "C:\\Program Files\\Shredder Simulator\\game.exe" }
+  },
+  {
+    "event_id": "n3",
+    "event_type": "file_access",
+    "source_artifact": "lnk",
+    "evidence": { "target_path": "C:\\Tools\\sdelete64.exe" }
+  },
+  {
+    "event_id": "n4",
+    "event_type": "program_execution",
+    "source_artifact": "registry.amcache",
+    "evidence": { "program_path": "C:\\Windows\\System32\\decipher.exe" }
+  }
+]

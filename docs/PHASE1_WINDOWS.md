@@ -23,6 +23,8 @@
 | IE / legacy-Edge history+downloads (IE10+) | `%LOCALAPPDATA%\Microsoft\Windows\WebCache\WebCacheV01.dat` (ESE) | `dissect.database.ese` |
 | IE history/cache (legacy, IE5–9 / Vista) | `...\History\History.IE5\index.dat`, `...\Content.IE5\index.dat`, `...\Cookies\index.dat` (MSIE Cache File) | `pymsiecf` (libmsiecf) |
 | Recycle Bin | `C:\$Recycle.Bin\<SID>\$I*` ($I metadata records) | custom parser (struct) |
+| USN change journal | `C:\$Extend\$UsnJrnl:$J` (with `$MFT` for paths, `$Secure:$SDS` for owners) | `dissect.ntfs` |
+| $MFT unallocated records | `C:\$MFT` | `dissect.ntfs` |
 
 ## Collection strategy
 
@@ -124,6 +126,28 @@
 - Raw disk read via `dissect.target` against `\\.\PhysicalDriveN`
 - Collection progress UI (per-artifact status)
 - All collected artifacts hashed (SHA-256) and logged to the audit trail
+
+### M12b — Deleted-file detection and attribution
+
+Design and contract: [DELETIONS.md](DELETIONS.md).
+
+- Collect `$MFT`, `$UsnJrnl:$J`, `$Secure:$SDS` (live and image); directory
+  triage recognises them by basename
+- Parsers emit `file_delete` (plus USN `file_rename`/`file_create`) with one
+  evidence contract across Recycle Bin, USN and MFT
+- `core/deletions.py` dedups across sources, maps SIDs to names (SAM,
+  ProfileList, Security 4624), reconstructs interactive logon sessions from
+  4624/4634/4647 and labels every row `direct` / `likely` / `ambiguous` /
+  `unknown` with a reason sentence; ≥ 20 deletions in 120 s become a
+  `file_delete_burst` event
+- `core/ghosts.py` marks LNK/JumpList/Prefetch/AmCache/UserAssist references
+  whose target no longer exists on the volume
+- Rules: anti-forensic tool executed, referenced file missing, bulk deletion,
+  USN journal deleted
+- UI "Deleted files" view; report section with headline numbers, by-user table,
+  recent deletions, bursts, and the confidence/limits paragraphs
+- Runs automatically after directory triage, single-artifact triage of a bin /
+  `$J` / `$MFT` file, and live collection — before rule evaluation
 
 ### M13 — Polish + packaging
 

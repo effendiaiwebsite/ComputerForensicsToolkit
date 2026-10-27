@@ -107,6 +107,22 @@ Target: ~30 rules at Phase 1 ship, covering these tactics. Each row is one or mo
 | Collection | Recent archive tool execution (7z, rar, WinRAR portable) with large output volume nearby |
 | Exfiltration | USB connection event correlated with mass file access in same window |
 | Credential Access | LSASS access via known dump tools (procdump.exe to lsass dump); SAM hive copy via reg.exe save |
+| Impact / anti-forensics (deletions) | see below |
+
+### Deletion and anti-forensic rules
+
+These rules consume the deleted-file pipeline described in
+[DELETIONS.md](DELETIONS.md). Each has a fixture pair under `tests/rules/`.
+
+| Rule id | Fires on | Techniques | Severity |
+|---|---|---|---|
+| `defense_evasion-anti-forensic-tool-executed-001` | `program_execution` of sdelete, sdelete64, eraser, eraserl, ccleaner, ccleaner64, bleachbit, bleachbit_console, cipher, privazer, wipefile, shred (any of `program_path`, `executable_filename`, `program_name`) | T1070.004, T1485 | high (cipher.exe and CCleaner have routine uses; the description says so) |
+| `defense_evasion-referenced-file-missing-001` | `program_execution` / `file_access` with `evidence.referenced_path_exists == false` (set by the ghost-reference pass) | T1070.004 | medium |
+| `impact-bulk-deletion-001` | the derived `file_delete_burst` event (≥ 20 deletions by one method inside 120 s) | T1485 | high |
+| `defense_evasion-usn-journal-deleted-001` | `file_delete` whose `original_path` ends in `$UsnJrnl`, `$UsnJrnl:$J` or `$J`, or `program_execution` of fsutil.exe | T1070.004 | high |
+
+The equality predicate compares with Python `==`, so `evidence.flag: false`
+matches a stored JSON `false` and nothing else (a missing key is `None`).
 
 ## Rule authoring conventions
 

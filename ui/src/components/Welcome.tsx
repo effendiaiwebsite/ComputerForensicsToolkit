@@ -30,6 +30,9 @@ export function Welcome({
           <p className="mt-1 font-mono text-xs text-muted-foreground">
             Parse Windows hives, evtx, prefetch, LNK, JumpLists, browser History.
             Auto-flag with MITRE ATT&amp;CK rules. Export an HTML report.
+            <br />
+            Deleted-file attribution: Recycle Bin, USN journal and $MFT, each deletion
+            tied to a user with a stated confidence and reason.
           </p>
         </div>
 

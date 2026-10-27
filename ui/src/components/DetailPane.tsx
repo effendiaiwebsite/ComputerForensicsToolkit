@@ -235,7 +235,9 @@ function renderBody(event: ForensicEvent): React.ReactElement {
     case "file_access":
       return <FileAccessView event={event} />;
     case "file_delete":
-      return <RecycleBinView event={event} />;
+      return <FileDeleteView event={event} />;
+    case "file_delete_burst":
+      return <FileDeleteBurstView event={event} />;
     case "program_install":
       return <ProgramInstallView event={event} />;
     default:
@@ -691,33 +693,165 @@ function AccountView({ event }: RendererProps) {
   );
 }
 
-// ---------- recycle bin ------------------------------------------------------
+// ---------- file_delete (Recycle Bin, USN journal, $MFT unallocated) ----------
 
-function RecycleBinView({ event }: RendererProps) {
+const DELETION_METHOD_TEXT: Record<string, string> = {
+  recycle_bin: "Recycle Bin ($I record) — the file was sent to the bin",
+  usn_journal: "USN change journal — FILE_DELETE record (covers Shift+Delete and programmatic deletes)",
+  mft_unallocated: "$MFT unallocated record — the file existed and its record is now free",
+};
+
+const RECOVERABLE_TEXT: Record<string, string> = {
+  recycle_bin_blob: "yes — a matching $R content file still exists in the Recycle Bin",
+  data_runs_present: "maybe — the $MFT record still lists its data clusters; content survives only if they were not reused (no carving)",
+  resident: "yes — the data was stored inside the $MFT record itself",
+  unknown: "unknown — no recoverability evidence",
+};
+
+function FileDeleteView({ event }: RendererProps) {
   const e = event.evidence as Record<string, unknown>;
   const original = String(e.original_path ?? "");
   const name = String(e.deleted_name ?? "");
-  const size = e.deleted_size as number | undefined;
+  const size = e.deleted_size;
+  const method = typeof e.deletion_method === "string" ? e.deletion_method : "recycle_bin";
+  const isBound = method === "mft_unallocated" || event.timestamp_source === "inferred";
+  const isDir = e.is_directory === true || e.is_directory === 1;
+  const reasons = Array.isArray(e.usn_reason) ? (e.usn_reason as unknown[]).map(String) : null;
+  const hint = typeof e.recoverable_hint === "string" ? e.recoverable_hint : "unknown";
+  const rows: Array<[string, React.ReactNode]> = [
+    ["method", DELETION_METHOD_TEXT[method] ?? method],
+    [
+      "when",
+      event.timestamp ? (
+        isBound ? (
+          <span>
+            <span className="text-warning">on or before </span>
+            {event.timestamp}
+            <span className="text-muted-foreground"> (last $STANDARD_INFORMATION change; the deletion itself is not timestamped)</span>
+          </span>
+        ) : (
+          <span>
+            {event.timestamp}
+            <span className="text-muted-foreground"> (exact, recorded by the artifact)</span>
+          </span>
+        )
+      ) : (
+        val(null)
+      ),
+    ],
+    ["original path", <span className="break-all">{val(original)}</span>],
+    ["name", val(name)],
+    ["kind", isDir ? "directory" : "file"],
+    ["size", typeof size === "number" ? `${bytes(size)} (${size.toLocaleString()} bytes)` : val(size)],
+    [
+      "owner SID",
+      <span className="break-all">
+        {val(e.owner_sid)}
+        {e.owner_sid != null && (
+          <span className="text-muted-foreground">
+            {method === "recycle_bin" ? " (owner of the $Recycle.Bin folder = the deleter)" : " (file owner from $Secure, not necessarily the deleter)"}
+          </span>
+        )}
+      </span>,
+    ],
+    [
+      "actor SID",
+      <span className="break-all">
+        {val(e.actor_sid)}
+        {e.actor_sid == null && (
+          <span className="text-muted-foreground"> (artifact does not name the deleter; see the Deleted files tab for the inferred user)</span>
+        )}
+      </span>,
+    ],
+  ];
+  if (e.security_id != null) rows.push(["NTFS security id", `${val(e.security_id)} (raw $Secure index)`]);
+  if (e.mft_segment != null) rows.push(["MFT record", val(e.mft_segment)]);
+  if (e.usn != null) rows.push(["USN", val(e.usn)]);
+  if (reasons && reasons.length > 0) {
+    rows.push([
+      "USN reasons",
+      <span className="flex flex-wrap gap-1">
+        {reasons.map((r) => (
+          <Pill key={r} tone={r === "FILE_DELETE" ? "warning" : "muted"} title={USN_REASON_TEXT[r] ?? r}>
+            {r}
+          </Pill>
+        ))}
+      </span>,
+    ]);
+  }
+  rows.push(["recoverable", RECOVERABLE_TEXT[hint] ?? hint]);
+  if (typeof e.recovered_name === "string" && e.recovered_name) rows.push(["$R blob", val(e.recovered_name)]);
+  if (e.last_known_modified != null) rows.push(["last known modified", val(e.last_known_modified)]);
+  if (e.last_known_created != null) rows.push(["last known created", val(e.last_known_created)]);
+  if (e.format_version != null) rows.push(["$I format", val(e.format_version)]);
   return (
     <>
-      <SectionHeader>deleted file</SectionHeader>
+      <SectionHeader>deleted {isDir ? "directory" : "file"}</SectionHeader>
       <div className="mb-2 break-all text-foreground">{name || original || "—"}</div>
       <div className="mb-2 flex flex-wrap gap-1">
-        {typeof size === "number" && size > 0 && <Pill tone="accent">{bytes(size)}</Pill>}
-        {typeof e.recovered_name === "string" && e.recovered_name && (
-          <Pill tone="warning" title="recoverable content blob">
-            {e.recovered_name as string}
-          </Pill>
-        )}
+        <Pill tone={method === "mft_unallocated" ? "warning" : "accent"}>{method.replace(/_/g, " ")}</Pill>
+        {isBound && <Pill tone="warning" title="MFT time is an upper bound, not the deletion time">time ≤</Pill>}
+        {typeof size === "number" && size > 0 && <Pill>{bytes(size)}</Pill>}
+        {hint !== "unknown" && <Pill tone="muted">{hint.replace(/_/g, " ")}</Pill>}
+      </div>
+      <KVList rows={rows} />
+      <CollapsibleRaw data={event.raw} />
+    </>
+  );
+}
+
+const USN_REASON_TEXT: Record<string, string> = {
+  FILE_DELETE: "the file or directory was deleted",
+  CLOSE: "the handle was closed (the record is final)",
+  FILE_CREATE: "the file or directory was created",
+  RENAME_OLD_NAME: "old name in a rename",
+  RENAME_NEW_NAME: "new name in a rename",
+  DATA_OVERWRITE: "data was overwritten",
+  DATA_EXTEND: "data was appended",
+  DATA_TRUNCATION: "data was truncated",
+  BASIC_INFO_CHANGE: "attributes or timestamps changed",
+  SECURITY_CHANGE: "security descriptor changed",
+  HARD_LINK_CHANGE: "hard link added or removed",
+  STREAM_CHANGE: "named stream added, removed or renamed",
+};
+
+function FileDeleteBurstView({ event }: RendererProps) {
+  const e = event.evidence as Record<string, unknown>;
+  const samples = Array.isArray(e.sample_paths) ? (e.sample_paths as unknown[]).map(String) : [];
+  const method = typeof e.method === "string" ? e.method : "—";
+  const count = typeof e.count === "number" ? e.count : null;
+  return (
+    <>
+      <SectionHeader>bulk deletion</SectionHeader>
+      <div className="mb-2 text-foreground">
+        <span className="text-base font-semibold">{count ?? "—"}</span>
+        <span className="text-muted-foreground"> deletions by one method inside a 120-second window</span>
+      </div>
+      <div className="mb-2 flex flex-wrap gap-1">
+        <Pill tone="error">burst</Pill>
+        <Pill tone="accent">{method.replace(/_/g, " ")}</Pill>
+        {typeof e.actor_user === "string" && e.actor_user && <Pill>{e.actor_user as string}</Pill>}
       </div>
       <KVList
         rows={[
-          ["original path", <span className="break-all">{original}</span>],
-          ["deleted at", val(event.timestamp)],
-          ["sid", val(e.sid)],
-          ["$I format", val(e.format_version)],
+          ["window start", val(e.window_start)],
+          ["window end", val(e.window_end)],
+          ["method", DELETION_METHOD_TEXT[method] ?? method],
+          ["attributed user", val(e.actor_user)],
         ]}
       />
+      {samples.length > 0 && (
+        <div className="mt-3">
+          <SectionHeader>sample paths ({samples.length}{count && count > samples.length ? ` of ${count}` : ""})</SectionHeader>
+          <ol className="ml-4 list-decimal space-y-0.5">
+            {samples.map((p, i) => (
+              <li key={`${i}-${p}`} className="break-all text-foreground">
+                {p}
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
       <CollapsibleRaw data={event.raw} />
     </>
   );

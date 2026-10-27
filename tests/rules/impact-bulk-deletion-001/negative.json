@@ -1,0 +1,17 @@
+[
+  {
+    "event_id": "n1",
+    "event_type": "file_delete",
+    "source_artifact": "usnjrnl",
+    "evidence": {
+      "original_path": "C:\\Users\\alice\\Documents\\a.docx",
+      "deletion_method": "usn_journal"
+    }
+  },
+  {
+    "event_id": "n2",
+    "event_type": "security_event",
+    "source_artifact": "evtx.security",
+    "evidence": { "event_id": 4663 }
+  }
+]

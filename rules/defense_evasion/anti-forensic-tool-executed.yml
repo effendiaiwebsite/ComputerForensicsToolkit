@@ -1,0 +1,31 @@
+id: defense_evasion-anti-forensic-tool-executed-001
+title: Anti-forensic / secure-deletion tool executed
+description: |
+  Execution evidence (Prefetch, AmCache, ShimCache, UserAssist) for a
+  secure-deletion or system-cleaning tool: sdelete, Eraser, CCleaner,
+  BleachBit, PrivaZer, WipeFile, shred, or cipher.exe. These overwrite file
+  content so that nothing survives for recovery, and most also clear
+  Recycle Bin, browser and MRU traces. CCleaner and cipher.exe have routine
+  administrative uses (cipher /w wipes free space but is also the built-in
+  way to defeat carving), so the finding needs the surrounding timeline:
+  look for a deletion burst or missing referenced files near the same time.
+severity: high
+mitre:
+  techniques: [T1070.004, T1485]
+  tactics: [defense_evasion, impact]
+references:
+  - https://attack.mitre.org/techniques/T1070/004/
+  - https://attack.mitre.org/techniques/T1485/
+  - https://learn.microsoft.com/sysinternals/downloads/sdelete
+author: dft
+date: 2026-10-27
+
+match:
+  event_type: program_execution
+  any_of:
+    - evidence.program_path:
+        regex: '(?i)(^|\\)(sdelete|sdelete64|eraser|eraserl|ccleaner|ccleaner64|bleachbit|bleachbit_console|cipher|privazer|wipefile|shred)(\.exe)?$'
+    - evidence.executable_filename:
+        regex: '(?i)^(sdelete|sdelete64|eraser|eraserl|ccleaner|ccleaner64|bleachbit|bleachbit_console|cipher|privazer|wipefile|shred)(\.exe)?$'
+    - evidence.program_name:
+        regex: '(?i)(^|\\)(sdelete|sdelete64|eraser|eraserl|ccleaner|ccleaner64|bleachbit|bleachbit_console|cipher|privazer|wipefile|shred)(\.exe)?$'

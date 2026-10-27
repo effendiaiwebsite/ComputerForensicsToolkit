@@ -1,0 +1,23 @@
+[
+  {
+    "event_id": "n1",
+    "event_type": "file_access",
+    "source_artifact": "lnk",
+    "evidence": {
+      "target_path": "C:\\Users\\alice\\Desktop\\plans.docx",
+      "referenced_path_exists": true
+    }
+  },
+  {
+    "event_id": "n2",
+    "event_type": "program_execution",
+    "source_artifact": "prefetch",
+    "evidence": { "program_path": "C:\\Windows\\System32\\cmd.exe" }
+  },
+  {
+    "event_id": "n3",
+    "event_type": "file_delete",
+    "source_artifact": "recycle_bin",
+    "evidence": { "original_path": "C:\\gone.txt", "referenced_path_exists": false }
+  }
+]

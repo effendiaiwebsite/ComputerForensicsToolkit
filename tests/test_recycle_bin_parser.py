@@ -70,6 +70,37 @@ def test_parse_v1_record(tmp_path: Path):
     assert ev.timestamp == "2007-07-14T17:55:57Z"
     assert ev.user == "Wes Mantooth"
     assert "CameraShy.exe" in ev.summary
+    # Shared file_delete contract (docs/DELETIONS.md): the bin folder's SID is
+    # both owner and actor; no $R sibling on disk -> recoverability unknown.
+    assert ev.evidence["deletion_method"] == "recycle_bin"
+    assert ev.evidence["owner_sid"] == ev.evidence["sid"]
+    assert ev.evidence["actor_sid"] == ev.evidence["sid"]
+    assert ev.evidence["is_directory"] is False
+    assert ev.evidence["recoverable_hint"] == "unknown"
+    for key in ("security_id", "mft_segment", "usn", "usn_reason",
+                "last_known_modified", "last_known_created"):
+        assert ev.evidence[key] is None, key
+
+
+def test_r_sibling_marks_blob_recoverable(tmp_path: Path):
+    sid_dir = tmp_path / "$Recycle.Bin" / "S-1-5-21-1-2-3-1000"
+    sid_dir.mkdir(parents=True)
+    i_file = sid_dir / "$IQWE123.txt"
+    i_file.write_bytes(_build_i_v2(r"C:\Users\a\x.txt", 3, datetime(2021, 1, 1, tzinfo=UTC)))
+    (sid_dir / "$RQWE123.txt").write_bytes(b"abc")
+    ev = parse_recycle_bin(i_file, collection_id="c", host_id_hint="H")[0]
+    assert ev.evidence["recoverable_hint"] == "recycle_bin_blob"
+    assert ev.evidence["recovered_name"] == "$RQWE123.txt"
+    assert ev.evidence["is_directory"] is False
+
+
+def test_r_sibling_directory_marks_is_directory(tmp_path: Path):
+    i_file = tmp_path / "$IDIR001"
+    i_file.write_bytes(_build_i_v2(r"C:\Users\a\folder", 0, datetime(2021, 1, 1, tzinfo=UTC)))
+    (tmp_path / "$RDIR001").mkdir()
+    ev = parse_recycle_bin(i_file, collection_id="c", host_id_hint="H")[0]
+    assert ev.evidence["recoverable_hint"] == "recycle_bin_blob"
+    assert ev.evidence["is_directory"] is True
 
 
 def test_parse_v2_record(tmp_path: Path):

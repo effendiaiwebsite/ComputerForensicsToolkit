@@ -102,6 +102,55 @@ def test_transaction_logs_are_not_classified_as_hives(tmp_path: Path) -> None:
     assert sorted(h.path.name for h in found) == ["Amcache.hve", "SYSTEM"]
 
 
+def test_classify_recognises_ntfs_metadata_streams(tmp_path: Path) -> None:
+    from collectors.windows.user_hives import _classify
+
+    expected = {
+        "$MFT": "mft", "$mft": "mft",
+        "$J": "usnjrnl", "$UsnJrnl$J": "usnjrnl", "$UsnJrnl_$J": "usnjrnl",
+        "$usnjrnl_$j": "usnjrnl",
+        "$SDS": "sds", "$Secure_$SDS": "sds", "$SECURE_$SDS": "sds",
+    }
+    for name, kind in expected.items():
+        assert _classify(tmp_path / name) == kind, name
+    assert _classify(tmp_path / "$I30") is None
+    assert _classify(tmp_path / "$LogFile") is None
+
+
+def test_ntfs_metadata_is_not_handed_to_the_hive_parser(tmp_path: Path) -> None:
+    for name in ("SYSTEM", "$MFT", "$J", "$SDS"):
+        (tmp_path / name).write_bytes(b"\x00")
+    assert [h.kind for h in discover_hives(tmp_path)] == ["system"]
+
+
+def test_discover_ntfs_meta_prefers_ntfs_subfolder_then_shallowest(tmp_path: Path) -> None:
+    from collectors.windows.user_hives import discover_ntfs_meta
+
+    assert discover_ntfs_meta(tmp_path) == {"mft": None, "usnjrnl": None, "sds": None}
+
+    (tmp_path / "ntfs").mkdir()
+    (tmp_path / "deep" / "er").mkdir(parents=True)
+    (tmp_path / "ntfs" / "$MFT").write_bytes(b"a")
+    (tmp_path / "$MFT").write_bytes(b"b")
+    (tmp_path / "deep" / "er" / "$UsnJrnl_$J").write_bytes(b"c")
+    (tmp_path / "deep" / "$J").write_bytes(b"d")
+    (tmp_path / "deep" / "er" / "$Secure_$SDS").write_bytes(b"e")
+
+    found = discover_ntfs_meta(tmp_path)
+    assert found["mft"] == tmp_path / "ntfs" / "$MFT"
+    assert found["usnjrnl"] == tmp_path / "deep" / "$J"
+    assert found["sds"] == tmp_path / "deep" / "er" / "$Secure_$SDS"
+
+
+def test_discover_ntfs_meta_not_a_directory(tmp_path: Path) -> None:
+    from collectors.windows.user_hives import discover_ntfs_meta
+
+    f = tmp_path / "file"
+    f.write_bytes(b"")
+    with pytest.raises(NotADirectoryError):
+        discover_ntfs_meta(f)
+
+
 def test_discover_recycle_bin_files_requires_dollar_i_plus_six_chars(tmp_path: Path) -> None:
     from collectors.windows.user_hives import discover_recycle_bin_files
 

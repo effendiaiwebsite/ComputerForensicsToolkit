@@ -125,6 +125,28 @@ async fn query_usb_devices(
 }
 
 #[tauri::command]
+async fn query_deletions(
+    sidecar: State<'_, Sidecar>,
+    args: Value,
+) -> Result<Value, String> {
+    sidecar
+        .request("query_deletions", args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn build_deletions(
+    sidecar: State<'_, Sidecar>,
+    args: Value,
+) -> Result<Value, String> {
+    sidecar
+        .request("build_deletions", args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn query_browser_domains(
     sidecar: State<'_, Sidecar>,
     args: Value,
@@ -271,6 +293,8 @@ pub fn run() {
             evaluate_rules,
             query_findings,
             query_usb_devices,
+            query_deletions,
+            build_deletions,
             query_browser_domains,
             query_activity_by_day,
             generate_report,

@@ -21,10 +21,11 @@ import logging
 import subprocess
 import sys
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from collectors.windows.ntfs_meta import NtfsMetaArtifacts, collect_ntfs_meta
 from core.audit import AuditLog
 from core.progress import ProgressTracker
 
@@ -223,6 +224,9 @@ class LiveCollectionResult:
     files_collected: int
     bytes_collected: int
     errors: int
+    # ``asdict(NtfsMetaArtifacts)``: where $MFT / $J / $SDS landed (or None) plus
+    # the volume's drive letter and any copy errors.
+    ntfs_meta: dict[str, Any] | None = None
 
 
 class NoWindowsVolumeError(RuntimeError):
@@ -313,6 +317,21 @@ def collect_live(
             dest_root=dest_root, counters=counters,
         )
 
+    # Phase 3: NTFS metadata ($MFT, $UsnJrnl:$J, $Secure:$SDS) for deleted-file
+    # detection. One progress step; the collector audits each stream itself.
+    progress.update(
+        collection_id,
+        total=len(system_specs) + len(rest) + 1,
+        current_item="NTFS metadata ($MFT, $UsnJrnl:$J, $Secure:$SDS)",
+    )
+    meta = _collect_ntfs_meta_safely(target, dest_root, audit=audit)
+    for p in (meta.mft_path, meta.usnjrnl_path, meta.sds_path):
+        if p:
+            counters.files += 1
+            counters.total_bytes += _size_of(p)
+    counters.errors += len(meta.errors)
+    progress.update(collection_id, completed_delta=1, category="ntfs_meta")
+
     return LiveCollectionResult(
         collection_id=collection_id,
         source=source_label,
@@ -321,7 +340,26 @@ def collect_live(
         files_collected=counters.files,
         bytes_collected=counters.total_bytes,
         errors=counters.errors,
+        ntfs_meta=asdict(meta),
     )
+
+
+def _collect_ntfs_meta_safely(
+    target: Any, dest_root: Path, *, audit: AuditLog,
+) -> NtfsMetaArtifacts:
+    try:
+        return collect_ntfs_meta(target, dest_root, audit=audit)
+    except Exception as exc:  # the collector swallows its own errors; this is belt-and-braces
+        logger.exception("NTFS metadata collection failed")
+        audit.error("copy", "ntfs:$MFT,$J,$SDS", exc, category="ntfs_meta", label="ntfs_meta")
+        return NtfsMetaArtifacts(None, None, None, "C:", [f"{type(exc).__name__}: {exc}"])
+
+
+def _size_of(path: str) -> int:
+    try:
+        return Path(path).stat().st_size
+    except OSError:
+        return 0
 
 
 @dataclass

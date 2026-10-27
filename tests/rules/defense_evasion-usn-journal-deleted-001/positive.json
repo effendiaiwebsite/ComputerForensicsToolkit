@@ -1,0 +1,32 @@
+[
+  {
+    "event_id": "p1",
+    "event_type": "file_delete",
+    "source_artifact": "mft",
+    "evidence": { "original_path": "C:\\$Extend\\$UsnJrnl", "deletion_method": "mft_unallocated" }
+  },
+  {
+    "event_id": "p2",
+    "event_type": "file_delete",
+    "source_artifact": "usnjrnl",
+    "evidence": { "original_path": "C:\\$Extend\\$UsnJrnl:$J", "deletion_method": "usn_journal" }
+  },
+  {
+    "event_id": "p3",
+    "event_type": "file_delete",
+    "source_artifact": "usnjrnl",
+    "evidence": { "original_path": "\\$Extend\\$J", "deletion_method": "usn_journal" }
+  },
+  {
+    "event_id": "p4",
+    "event_type": "program_execution",
+    "source_artifact": "prefetch",
+    "evidence": { "executable_filename": "FSUTIL.EXE" }
+  },
+  {
+    "event_id": "p5",
+    "event_type": "program_execution",
+    "source_artifact": "registry.amcache",
+    "evidence": { "program_path": "C:\\Windows\\System32\\fsutil.exe" }
+  }
+]

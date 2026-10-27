@@ -1,0 +1,29 @@
+[
+  {
+    "event_id": "n1",
+    "event_type": "file_delete",
+    "source_artifact": "usnjrnl",
+    "evidence": {
+      "original_path": "C:\\Users\\alice\\Documents\\journal.txt",
+      "deletion_method": "usn_journal"
+    }
+  },
+  {
+    "event_id": "n2",
+    "event_type": "file_delete",
+    "source_artifact": "recycle_bin",
+    "evidence": { "original_path": "C:\\Users\\alice\\$J.bak", "deletion_method": "recycle_bin" }
+  },
+  {
+    "event_id": "n3",
+    "event_type": "program_execution",
+    "source_artifact": "prefetch",
+    "evidence": { "executable_filename": "FSUTILITY.EXE" }
+  },
+  {
+    "event_id": "n4",
+    "event_type": "file_access",
+    "source_artifact": "lnk",
+    "evidence": { "target_path": "C:\\Windows\\System32\\fsutil.exe" }
+  }
+]

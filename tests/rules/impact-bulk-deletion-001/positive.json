@@ -1,0 +1,15 @@
+[
+  {
+    "event_id": "p1",
+    "event_type": "file_delete_burst",
+    "source_artifact": "derived.deletions",
+    "evidence": {
+      "count": 42,
+      "method": "usn_journal",
+      "window_start": "2026-01-01T10:00:00Z",
+      "window_end": "2026-01-01T10:01:30Z",
+      "actor_user": "alice",
+      "sample_paths": ["C:\\Users\\alice\\Documents\\a.docx"]
+    }
+  }
+]

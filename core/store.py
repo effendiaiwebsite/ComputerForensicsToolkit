@@ -76,7 +76,44 @@ CREATE TABLE IF NOT EXISTS findings (
 CREATE INDEX IF NOT EXISTS idx_findings_collection ON findings(collection_id);
 CREATE INDEX IF NOT EXISTS idx_findings_severity   ON findings(severity);
 CREATE INDEX IF NOT EXISTS idx_findings_rule       ON findings(rule_id);
+
+-- Rebuilt wholesale by core.deletions.build_deletions; never hand-edited.
+-- event_id is a logical FK to events(event_id): not declared, because
+-- INSERT OR REPLACE on events would otherwise trip the FK check on re-ingest.
+CREATE TABLE IF NOT EXISTS deletions (
+    deletion_id      TEXT PRIMARY KEY,
+    collection_id    TEXT NOT NULL,
+    event_id         TEXT NOT NULL,
+    deleted_at       TEXT,
+    time_basis       TEXT NOT NULL,   -- 'exact' | 'upper_bound'
+    path             TEXT,
+    name             TEXT,
+    size             INTEGER,
+    is_directory     INTEGER NOT NULL DEFAULT 0,
+    method           TEXT NOT NULL,   -- 'recycle_bin' | 'usn_journal' | 'mft_unallocated'
+    owner_sid        TEXT,
+    owner_user       TEXT,
+    actor_user       TEXT,
+    actor_sid        TEXT,
+    actor_confidence TEXT NOT NULL,   -- 'direct' | 'likely' | 'ambiguous' | 'unknown'
+    actor_reason     TEXT,
+    recoverable_hint TEXT,
+    source_path      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_deletions_collection_time   ON deletions(collection_id, deleted_at);
+CREATE INDEX IF NOT EXISTS idx_deletions_collection_actor  ON deletions(collection_id, actor_user);
+CREATE INDEX IF NOT EXISTS idx_deletions_collection_method ON deletions(collection_id, method);
 """
+
+_DELETION_COLUMNS = (
+    "deletion_id", "collection_id", "event_id", "deleted_at", "time_basis",
+    "path", "name", "size", "is_directory", "method", "owner_sid", "owner_user",
+    "actor_user", "actor_sid", "actor_confidence", "actor_reason",
+    "recoverable_hint", "source_path",
+)
+
+_DELETION_SORT_COLUMNS = {"deleted_at", "path", "actor_user"}
 
 _SORT_COLUMNS = {
     "timestamp",
@@ -501,6 +538,176 @@ class EventStore:
         return out
 
     @_locked
+    def delete_events_by_source(self, collection_id: str, source_artifact: str) -> int:
+        """Remove every event of ``source_artifact`` in a collection (used to make
+        derived events idempotent on rebuild)."""
+        cur = self._conn.execute(
+            "DELETE FROM events WHERE collection_id = ? AND source_artifact = ?",
+            (collection_id, source_artifact),
+        )
+        return cur.rowcount or 0
+
+    @_locked
+    def update_event_evidence(self, event_id: str, patch: dict[str, Any]) -> bool:
+        """Merge ``patch`` into the stored evidence of one event (RFC 7396 merge:
+        a ``None`` value removes the key). Returns False when the event is unknown."""
+        if not patch:
+            return False
+        cur = self._conn.execute(
+            "UPDATE events SET evidence_json = json_patch(evidence_json, ?) WHERE event_id = ?",
+            (json.dumps(patch, default=str), event_id),
+        )
+        return bool(cur.rowcount)
+
+    # ----- deletions ---------------------------------------------------------
+
+    @_locked
+    def replace_deletions(self, collection_id: str, rows: Iterable[dict[str, Any]]) -> int:
+        """Drop the collection's deletion rows and insert ``rows`` (dicts keyed by
+        the ``deletions`` column names; missing keys become NULL)."""
+        self._conn.execute("DELETE FROM deletions WHERE collection_id = ?", (collection_id,))
+        values = [
+            tuple(
+                collection_id if col == "collection_id"
+                else int(bool(r.get(col))) if col == "is_directory"
+                else r.get(col)
+                for col in _DELETION_COLUMNS
+            )
+            for r in rows
+        ]
+        if not values:
+            return 0
+        placeholders = ",".join("?" * len(_DELETION_COLUMNS))
+        self._conn.executemany(
+            f"INSERT INTO deletions({','.join(_DELETION_COLUMNS)}) VALUES ({placeholders})",
+            values,
+        )
+        return len(values)
+
+    @staticmethod
+    def _deletion_filters(
+        collection_id: str,
+        method: str | None,
+        actor_user: str | None,
+        actor_confidence: str | None,
+        path_contains: str | None,
+        time_basis: str | None = None,
+    ) -> tuple[str, list[Any]]:
+        where = ["collection_id = ?"]
+        params: list[Any] = [collection_id]
+        if method:
+            where.append("method = ?")
+            params.append(method)
+        if time_basis:
+            where.append("time_basis = ?")
+            params.append(time_basis)
+        if actor_user:
+            where.append("actor_user = ?")
+            params.append(actor_user)
+        if actor_confidence:
+            where.append("actor_confidence = ?")
+            params.append(actor_confidence)
+        if path_contains:
+            where.append(f"path LIKE ? {_LIKE_ESCAPE}")
+            params.append(_like_pattern(path_contains))
+        return " WHERE " + " AND ".join(where), params
+
+    @_locked
+    def query_deletions(
+        self,
+        *,
+        collection_id: str,
+        limit: int = 500,
+        offset: int = 0,
+        method: str | None = None,
+        actor_user: str | None = None,
+        actor_confidence: str | None = None,
+        path_contains: str | None = None,
+        time_basis: str | None = None,
+        sort_by: str = "deleted_at",
+        sort_dir: str = "desc",
+    ) -> list[dict[str, Any]]:
+        if sort_by not in _DELETION_SORT_COLUMNS:
+            raise ValueError(f"sort_by must be one of {sorted(_DELETION_SORT_COLUMNS)}")
+        if sort_dir.lower() not in {"asc", "desc"}:
+            raise ValueError("sort_dir must be 'asc' or 'desc'")
+        where_sql, params = self._deletion_filters(
+            collection_id, method, actor_user, actor_confidence, path_contains, time_basis,
+        )
+        sql = (
+            f"SELECT {','.join(_DELETION_COLUMNS)} FROM deletions{where_sql} "
+            f"ORDER BY {sort_by} {sort_dir.upper()} NULLS LAST, path ASC LIMIT ? OFFSET ?"
+        )
+        params.extend([limit, offset])
+        rows = self._conn.execute(sql, params).fetchall()
+        return [_deletion_row_to_dict(r) for r in rows]
+
+    @_locked
+    def count_deletions(
+        self,
+        *,
+        collection_id: str,
+        method: str | None = None,
+        actor_user: str | None = None,
+        actor_confidence: str | None = None,
+        path_contains: str | None = None,
+        time_basis: str | None = None,
+    ) -> int:
+        where_sql, params = self._deletion_filters(
+            collection_id, method, actor_user, actor_confidence, path_contains, time_basis,
+        )
+        row = self._conn.execute(
+            f"SELECT COUNT(*) AS c FROM deletions{where_sql}", params,
+        ).fetchone()
+        return int(row["c"])
+
+    @_locked
+    def deletions_by_method(self, *, collection_id: str) -> dict[str, int]:
+        rows = self._conn.execute(
+            "SELECT method, COUNT(*) AS c FROM deletions WHERE collection_id = ? "
+            "GROUP BY method ORDER BY c DESC",
+            (collection_id,),
+        ).fetchall()
+        return {r["method"]: int(r["c"]) for r in rows}
+
+    @_locked
+    def deletions_by_confidence(self, *, collection_id: str) -> dict[str, int]:
+        rows = self._conn.execute(
+            "SELECT actor_confidence, COUNT(*) AS c FROM deletions WHERE collection_id = ? "
+            "GROUP BY actor_confidence",
+            (collection_id,),
+        ).fetchall()
+        return {r["actor_confidence"]: int(r["c"]) for r in rows}
+
+    @_locked
+    def deletions_by_actor(self, *, collection_id: str) -> list[dict[str, Any]]:
+        """``[{actor_user, actor_confidence, count}]`` most frequent first; rows
+        with no attributed actor are reported under ``actor_user = None``."""
+        rows = self._conn.execute(
+            "SELECT actor_user, actor_confidence, COUNT(*) AS c FROM deletions "
+            "WHERE collection_id = ? GROUP BY actor_user, actor_confidence "
+            "ORDER BY c DESC, (actor_user IS NULL) ASC, actor_user ASC, actor_confidence ASC",
+            (collection_id,),
+        ).fetchall()
+        return [
+            {
+                "actor_user": r["actor_user"],
+                "actor_confidence": r["actor_confidence"],
+                "count": int(r["c"]),
+            }
+            for r in rows
+        ]
+
+    @_locked
+    def count_deletion_bursts(self, *, collection_id: str) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS c FROM events "
+            "WHERE collection_id = ? AND event_type = 'file_delete_burst'",
+            (collection_id,),
+        ).fetchone()
+        return int(row["c"])
+
+    @_locked
     def get_event(self, event_id: str) -> dict[str, Any] | None:
         row = self._conn.execute(
             "SELECT event_id, collection_id, timestamp, timestamp_source, host_os, "
@@ -771,6 +978,12 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     d = dict(row)
     d["evidence"] = json.loads(d.pop("evidence_json") or "{}")
     d["raw"] = json.loads(d.pop("raw_json") or "{}")
+    return d
+
+
+def _deletion_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    d = dict(row)
+    d["is_directory"] = bool(d.get("is_directory"))
     return d
 
 

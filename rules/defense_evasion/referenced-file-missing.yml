@@ -1,0 +1,24 @@
+id: defense_evasion-referenced-file-missing-001
+title: Referenced file no longer exists on the volume
+description: |
+  An LNK, JumpList, RecentDocs, Prefetch, ShimCache, AmCache or UserAssist
+  entry points at a path that is absent from the volume
+  (`evidence.referenced_path_exists == false`, set by the ghost-reference
+  pass in core/ghosts.py). The file was opened or run and later removed —
+  deletion evidence that may survive after the Recycle Bin was emptied and
+  the USN journal rolled over. Installers, updaters and temp files produce
+  benign hits; correlate with the Deleted files view before drawing
+  conclusions. Only drive-letter paths on the system volume are checked.
+severity: medium
+mitre:
+  techniques: [T1070.004]
+  tactics: [defense_evasion]
+references:
+  - https://attack.mitre.org/techniques/T1070/004/
+author: dft
+date: 2026-10-27
+
+match:
+  event_type:
+    in: [program_execution, file_access]
+  evidence.referenced_path_exists: false

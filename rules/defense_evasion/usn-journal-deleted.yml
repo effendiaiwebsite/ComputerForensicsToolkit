@@ -1,0 +1,35 @@
+id: defense_evasion-usn-journal-deleted-001
+title: USN change journal deleted or fsutil executed
+description: |
+  Deleting the NTFS change journal (`fsutil usn deletejournal /D C:`) removes
+  the record of every recent create, rename and delete on the volume — a
+  direct anti-forensic step. Two signals: a `file_delete` whose original path
+  is `\$Extend\$UsnJrnl` (or its `$J` stream) seen by the Recycle Bin, USN or
+  MFT parsers, or execution evidence for fsutil.exe. Execution artifacts do
+  not record command lines, so an fsutil hit on its own only says the tool
+  ran; pair it with a short or missing USN journal, or a `$UsnJrnl` creation
+  time newer than the system install, to confirm.
+severity: high
+mitre:
+  techniques: [T1070.004]
+  tactics: [defense_evasion]
+references:
+  - https://attack.mitre.org/techniques/T1070/004/
+  - https://learn.microsoft.com/windows-server/administration/windows-commands/fsutil-usn
+author: dft
+date: 2026-10-27
+
+match:
+  any_of:
+    - event_type: file_delete
+      evidence.original_path:
+        regex: '(?i)\\\$(UsnJrnl(:\$J)?|J)$'
+    - event_type: program_execution
+      evidence.program_path:
+        regex: '(?i)(^|\\)fsutil(\.exe)?$'
+    - event_type: program_execution
+      evidence.executable_filename:
+        regex: '(?i)^fsutil(\.exe)?$'
+    - event_type: program_execution
+      evidence.program_name:
+        regex: '(?i)(^|\\)fsutil(\.exe)?$'

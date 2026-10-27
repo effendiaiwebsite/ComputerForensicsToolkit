@@ -33,6 +33,7 @@ Open vocabulary, extended as new artifacts are added. Initial set:
 - `account_change`
 - `file_access`
 - `file_create` / `file_delete` / `file_rename`
+- `file_delete_burst` (derived, see below)
 - `network_connection`
 - `registry_modification`
 - `service_install`
@@ -124,6 +125,64 @@ Open vocabulary, extended as new artifacts are added. Initial set:
   "raw": { "...": "..." },
   "collection_id": "col-2026-06-08-001",
   "parser_version": "ntuser_hive/0.1.0"
+}
+```
+
+### File deletion (Recycle Bin, USN journal, $MFT)
+
+All three deletion sources emit `file_delete` with one shared evidence
+contract (full table in [DELETIONS.md](DELETIONS.md)):
+
+| key | type | notes |
+|---|---|---|
+| `original_path` | string | full Windows path as it existed |
+| `deleted_name` | string | basename |
+| `deleted_size` | int \| null | bytes |
+| `deletion_method` | `recycle_bin` \| `usn_journal` \| `mft_unallocated` | which artifact saw it |
+| `owner_sid` | string \| null | NTFS owner (`$Secure`) or the bin folder SID |
+| `actor_sid` | string \| null | only when the artifact names the deleter (Recycle Bin) |
+| `security_id`, `mft_segment` | int \| null | raw NTFS ids, used to dedup USN vs MFT |
+| `is_directory` | bool | |
+| `recoverable_hint` | `recycle_bin_blob` \| `data_runs_present` \| `resident` \| `unknown` | |
+| `usn`, `usn_reason` | int \| null, list[str] \| null | USN only |
+| `last_known_modified`, `last_known_created` | ISO Z \| null | MFT only |
+
+`timestamp_source` is `direct` for Recycle Bin and USN, `inferred` for MFT
+(the `$STANDARD_INFORMATION` change time is an upper bound, not the deletion
+time). The Recycle Bin parser keeps its earlier keys (`recovered_name`,
+`sid`, `format_version`).
+
+### Ghost references
+
+The post-triage pass in `core/ghosts.py` adds one key to `file_access`
+(`evidence.target_path`) and `program_execution` (`evidence.program_path`)
+events whose drive-letter path could be checked against the volume:
+
+| key | type | notes |
+|---|---|---|
+| `referenced_path_exists` | bool | absent when the path was not checkable (UNC, other drive, no volume root) |
+
+### Derived: `file_delete_burst`
+
+Emitted by `core/deletions.py` (not by a parser) with
+`source_artifact = "derived.deletions"`, `timestamp = window_start`,
+`timestamp_source = "inferred"`. Rebuilt on every attribution run with a
+stable `event_id`, so findings on it keep their examiner status.
+
+```json
+{
+  "event_type": "file_delete_burst",
+  "source_artifact": "derived.deletions",
+  "summary": "Bulk deletion: 42 files via usn_journal within 85s — alice",
+  "evidence": {
+    "count": 42,
+    "window_start": "2026-06-08T14:20:11Z",
+    "window_end": "2026-06-08T14:21:36Z",
+    "method": "usn_journal",
+    "actor_user": "alice",
+    "sample_paths": ["C:\\Users\\alice\\Documents\\q1.xlsx", "..."],
+    "deletion_ids": ["..."]
+  }
 }
 ```
 

@@ -13,6 +13,7 @@ import uuid
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from core import SCHEMA_VERSION, __version__
@@ -50,6 +51,52 @@ def _host_from_events(events: list[Event], fallback: str) -> str:
             if cn:
                 return str(cn)
     return fallback
+
+
+_NTFS_META_BASENAMES = {
+    "$mft": "mft",
+    "$j": "usnjrnl",
+    "$usnjrnl$j": "usnjrnl",
+    "$usnjrnl_$j": "usnjrnl",
+}
+_DELETION_KINDS = {"recycle_bin", "usnjrnl", "mft"}
+
+
+def _sha256_of(path: str | Path) -> tuple[str, int]:
+    from hashlib import sha256
+
+    h = sha256()
+    size = 0
+    with Path(path).open("rb") as fh:
+        while chunk := fh.read(1024 * 1024):
+            h.update(chunk)
+            size += len(chunk)
+    return h.hexdigest(), size
+
+
+def _finalize_deletions(
+    store: EventStore,
+    collection_id: str,
+    *,
+    exists_fn=None,
+) -> dict[str, Any]:
+    """Attribution + ghost pass that every ingest path runs before rule evaluation."""
+    from core.deletions import build_deletions
+    from core.ghosts import annotate_missing_references
+
+    out: dict[str, Any] = {"deletions": None, "ghost_annotated": 0}
+    try:
+        out["deletions"] = build_deletions(store, collection_id).to_dict()
+    except Exception as exc:
+        log.exception("deletion attribution failed for %s", collection_id)
+        out["deletions_error"] = f"{type(exc).__name__}: {exc}"
+    if exists_fn is not None:
+        try:
+            out["ghost_annotated"] = annotate_missing_references(store, collection_id, exists_fn)
+        except Exception as exc:
+            log.exception("ghost-reference pass failed for %s", collection_id)
+            out["ghost_error"] = f"{type(exc).__name__}: {exc}"
+    return out
 
 
 def _make_run_triage_system_hive(store: EventStore):
@@ -160,6 +207,33 @@ def _make_run_triage_hive(store: EventStore):
             host_id = host_id_hint
             note = f"ie index.dat: {artifact.source_path}"
             kind_out = "ie.index_dat"
+        elif basename_lower in _NTFS_META_BASENAMES:
+            # Single $MFT / $J without its siblings: USN paths fall back to
+            # "<unresolved>" and no owner SIDs resolve; directory triage is
+            # the full-fidelity path.
+            kind_out = _NTFS_META_BASENAMES[basename_lower]
+            sha, size = _sha256_of(hive_path)
+            artifact = SimpleNamespace(
+                source_path=str(Path(hive_path).resolve()), sha256=sha, size_bytes=size,
+            )
+            if kind_out == "mft":
+                from parsers.mft import parse_mft_deleted
+
+                events = parse_mft_deleted(
+                    artifact.source_path,
+                    collection_id=collection_id,
+                    host_id_hint=host_id_hint,
+                )
+            else:
+                from parsers.usnjrnl import parse_usnjrnl
+
+                events = parse_usnjrnl(
+                    artifact.source_path,
+                    collection_id=collection_id,
+                    host_id_hint=host_id_hint,
+                )
+            host_id = host_id_hint
+            note = f"{kind_out}: {artifact.source_path}"
         elif basename_lower.startswith("$i") and basename_lower != "$i30":
             from collectors.windows.recycle_bin import collect_recycle_bin
             from parsers.recycle_bin import parse_recycle_bin
@@ -282,7 +356,7 @@ def _make_run_triage_hive(store: EventStore):
         by_type: dict[str, int] = {}
         for e in events:
             by_type[e.event_type] = by_type.get(e.event_type, 0) + 1
-        return {
+        result: dict[str, Any] = {
             "collection_id": collection_id,
             "host_id": host_id,
             "kind": kind_out,
@@ -292,6 +366,9 @@ def _make_run_triage_hive(store: EventStore):
             "event_count": inserted,
             "by_event_type": by_type,
         }
+        if kind_out in _DELETION_KINDS:
+            result.update(_finalize_deletions(store, collection_id))
+        return result
 
     return handler
 
@@ -346,18 +423,19 @@ def _make_run_triage_directory(store: EventStore):
         webcache_files = discover_webcache_files(dir_path)
         index_dat_files = discover_index_dat_files(dir_path)
         recycle_bin_files = discover_recycle_bin_files(dir_path)
+        ntfs_meta = _discover_ntfs_meta(dir_path)
         if not (
             hives or evtx_files or prefetch_files
             or lnk_files or jumplist_files or browser_files
             or firefox_files or webcache_files or index_dat_files
-            or recycle_bin_files
+            or recycle_bin_files or ntfs_meta.get("mft") or ntfs_meta.get("usnjrnl")
         ):
             return {
                 "ok": False,
                 "error": (
                     f"no registry hives, .evtx, .pf, .lnk, JumpList, browser "
-                    f"History, Firefox places, WebCache, index.dat, or Recycle "
-                    f"Bin files found under {dir_path!r}"
+                    f"History, Firefox places, WebCache, index.dat, Recycle "
+                    f"Bin, $MFT or $UsnJrnl files found under {dir_path!r}"
                 ),
             }
 
@@ -673,10 +751,26 @@ def _make_run_triage_directory(store: EventStore):
                     "error": f"{type(exc).__name__}: {exc}",
                 })
 
+        for entry in _ingest_ntfs_meta(
+            store, ntfs_meta, collection_id=collection_id, host_id=host_id,
+        ):
+            total += int(entry.get("event_count") or 0)
+            per_hive.append(entry)
+
         if host_id != host_id_hint:
             # The SYSTEM hive names the examined host; the row was registered
             # with the examiner-machine placeholder before parsing.
             store.set_collection_host(collection_id, host_id)
+
+        # Attribution and the ghost pass run before the UI's evaluate_rules call.
+        # The live worker passes annotate_ghosts=False and checks the real volume
+        # instead of its sparse artifact mirror.
+        exists_fn = None
+        if request.get("annotate_ghosts", True):
+            from core.ghosts import directory_exists_fn
+
+            exists_fn = directory_exists_fn(dir_path)
+        finalize = _finalize_deletions(store, collection_id, exists_fn=exists_fn)
 
         return {
             "collection_id": collection_id,
@@ -686,9 +780,83 @@ def _make_run_triage_directory(store: EventStore):
             "by_event_type": store.counts_by_event_type(collection_id=collection_id),
             "by_source_artifact": store.counts_by_source_artifact(collection_id=collection_id),
             "artifacts": per_hive,
+            **finalize,
         }
 
     return handler
+
+
+def _discover_ntfs_meta(dir_path: str) -> dict[str, Any]:
+    """``{mft, usnjrnl, sds}`` paths found under ``dir_path`` (values may be
+    ``None``); empty when the collector module is not available."""
+    try:
+        from collectors.windows.user_hives import discover_ntfs_meta
+    except ImportError:
+        return {}
+    try:
+        found = discover_ntfs_meta(dir_path) or {}
+    except Exception:
+        log.exception("NTFS metadata discovery failed under %s", dir_path)
+        return {}
+    return {k: v for k, v in found.items() if v}
+
+
+def _ingest_ntfs_meta(
+    store: EventStore,
+    ntfs_meta: dict[str, Any],
+    *,
+    collection_id: str,
+    host_id: str,
+) -> list[dict[str, Any]]:
+    """Parse ``$UsnJrnl:$J`` (with ``$MFT``/``$SDS`` for path and owner
+    resolution) and the unallocated ``$MFT`` records; one result per artifact."""
+    results: list[dict[str, Any]] = []
+    mft = ntfs_meta.get("mft")
+    usn = ntfs_meta.get("usnjrnl")
+    sds = ntfs_meta.get("sds")
+    mft_path = str(mft) if mft else None
+    sds_path = str(sds) if sds else None
+
+    def _entry(kind: str, path: Any, **extra: Any) -> dict[str, Any]:
+        entry: dict[str, Any] = {"kind": kind, "path": str(path), "user_hint": None}
+        try:
+            sha, size = _sha256_of(path)
+            entry["sha256"], entry["size_bytes"] = sha, size
+        except OSError as exc:
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+        entry.update(extra)
+        return entry
+
+    if sds:
+        results.append(_entry("sds", sds, event_count=0))
+    if usn:
+        entry = _entry("usnjrnl", usn, mft_path=mft_path, sds_path=sds_path)
+        try:
+            from parsers.usnjrnl import parse_usnjrnl
+
+            events = parse_usnjrnl(
+                str(usn), collection_id=collection_id, host_id_hint=host_id,
+                mft_path=mft_path, sds_path=sds_path,
+            )
+            entry["event_count"] = store.insert_events(events)
+        except Exception as exc:
+            log.exception("parse failed for %s", usn)
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+        results.append(entry)
+    if mft:
+        entry = _entry("mft", mft, sds_path=sds_path)
+        try:
+            from parsers.mft import parse_mft_deleted
+
+            events = parse_mft_deleted(
+                str(mft), collection_id=collection_id, host_id_hint=host_id, sds_path=sds_path,
+            )
+            entry["event_count"] = store.insert_events(events)
+        except Exception as exc:
+            log.exception("parse failed for %s", mft)
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+        results.append(entry)
+    return results
 
 
 def _make_query_program_execution_composite(store: EventStore):
@@ -704,6 +872,61 @@ def _make_query_program_execution_composite(store: EventStore):
                 collection_id=request.get("collection_id"),
             ),
         }
+
+    return handler
+
+
+def _make_query_deletions(store: EventStore):
+    def handler(request: dict[str, Any]) -> dict[str, Any]:
+        cid = request.get("collection_id")
+        if not isinstance(cid, str) or not cid:
+            return {"ok": False, "error": "missing 'collection_id' string"}
+        filters = {
+            "method": request.get("method") or None,
+            "actor_user": request.get("actor_user") or None,
+            "actor_confidence": request.get("actor_confidence") or None,
+            "path_contains": request.get("path_contains") or None,
+        }
+        try:
+            rows = store.query_deletions(
+                collection_id=cid,
+                limit=int(request.get("limit", 500)),
+                offset=int(request.get("offset", 0)),
+                sort_by=request.get("sort_by") or "deleted_at",
+                sort_dir=request.get("sort_dir") or "desc",
+                **filters,
+            )
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {
+            "deletions": rows,
+            # total honours the request's filters (for paging); the aggregates
+            # describe the whole collection (for the summary strip).
+            "total": store.count_deletions(collection_id=cid, **filters),
+            "total_unfiltered": store.count_deletions(collection_id=cid),
+            "by_method": store.deletions_by_method(collection_id=cid),
+            "by_actor": store.deletions_by_actor(collection_id=cid),
+            "bursts": store.count_deletion_bursts(collection_id=cid),
+        }
+
+    return handler
+
+
+def _make_build_deletions(store: EventStore):
+    def handler(request: dict[str, Any]) -> dict[str, Any]:
+        from core.deletions import build_deletions
+
+        cid = request.get("collection_id")
+        if not isinstance(cid, str) or not cid:
+            return {"ok": False, "error": "missing 'collection_id' string"}
+        if store.get_collection(cid) is None:
+            return {"ok": False, "error": f"unknown collection_id: {cid!r}"}
+        try:
+            summary = build_deletions(store, cid)
+        except Exception as exc:
+            log.exception("build_deletions failed for %s", cid)
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"collection_id": cid, **summary.to_dict()}
 
     return handler
 
@@ -1278,6 +1501,7 @@ def _make_run_live_collection(store: EventStore, progress, rules_dir: Path):
                     "dir_path": str(dest_root),
                     "host_id_hint": socket.gethostname(),
                     "collection_id": collection_id,
+                    "annotate_ghosts": False,
                 })
                 if tri.get("ok") is False:
                     error = f"ingestion failed: {tri.get('error', 'unknown error')}"
@@ -1287,6 +1511,21 @@ def _make_run_live_collection(store: EventStore, progress, rules_dir: Path):
                     })
                     progress.finish(collection_id, error=error)
                     return
+                # Ghost references are checked against the live volume itself —
+                # the mirror under dest_root only holds the collected artifacts.
+                progress.update(collection_id, current_item="checking referenced paths…")
+                try:
+                    from collectors.windows.live_disk import _resolve_windows_root
+                    from core.ghosts import annotate_missing_references, image_root_exists_fn
+
+                    root = _resolve_windows_root(target)
+                    if root is not None:
+                        annotate_missing_references(
+                            store, collection_id, image_root_exists_fn(root),
+                        )
+                except Exception as exc:
+                    logging.getLogger(__name__).exception("ghost-reference pass failed")
+                    audit.error("annotate_ghosts", drive, exc)
                 failed = [a for a in tri.get("artifacts", []) if a.get("error")]
                 for a in failed:
                     audit.write({
@@ -1367,6 +1606,8 @@ def build_dispatcher(
         _make_query_program_execution_composite(store),
     )
     dispatcher.register("query_browser_domains", _make_query_browser_domains(store))
+    dispatcher.register("query_deletions", _make_query_deletions(store))
+    dispatcher.register("build_deletions", _make_build_deletions(store))
     dispatcher.register("query_activity_by_day", _make_query_activity_by_day(store))
     dispatcher.register("generate_report", _make_generate_report(store))
     dispatcher.register("enumerate_drives", _make_enumerate_drives())

@@ -64,6 +64,9 @@ def parse_recycle_bin(
     recovered = "$R" + basename[2:] if basename.startswith("$I") else None
     sid = _sid_from_path(path_str)
     deleted_name = _basename_of(original_path)
+    sibling = Path(path_str).with_name(recovered) if recovered else None
+    has_blob = bool(sibling is not None and sibling.exists())
+    is_directory = bool(has_blob and sibling.is_dir())
 
     size_str = f" ({_human_bytes(orig_size)})" if orig_size else ""
     summary = f"Deleted: {_clip(deleted_name or original_path, 90)}{size_str}"
@@ -82,6 +85,20 @@ def parse_recycle_bin(
             "recovered_name": recovered,
             "sid": sid,
             "format_version": version,
+            # Shared file_delete contract (docs/DELETIONS.md). The $Recycle.Bin\<SID>
+            # folder owner is the user who sent the file to the bin, so the SID is
+            # both the owner and the actor.
+            "deletion_method": "recycle_bin",
+            "owner_sid": sid,
+            "actor_sid": sid,
+            "security_id": None,
+            "mft_segment": None,
+            "is_directory": is_directory,
+            "recoverable_hint": "recycle_bin_blob" if has_blob else "unknown",
+            "usn": None,
+            "usn_reason": None,
+            "last_known_modified": None,
+            "last_known_created": None,
         },
         collection_id=collection_id,
         parser_version=PARSER_VERSION,
