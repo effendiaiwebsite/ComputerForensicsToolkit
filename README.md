@@ -69,3 +69,20 @@ It's been developed and tested against my own machine's artifacts and public tra
 - Python: type-hinted, `ruff` for linting, `pytest` for tests (200+ covering parsers, rules, and the sidecar ops).
 - No writes to source artifacts; SHA-256 on everything collected; full audit trail.
 - Detection rules are YAML, and every rule maps to at least one MITRE ATT&CK technique.
+
+## License
+
+This project's own code is released under the [MIT License](LICENSE).
+
+It depends on third-party libraries with their own terms, which apply to any build that bundles them (the portable `dft-sidecar` folder does):
+
+| Library | License | Used for |
+|---|---|---|
+| `dissect.target` and the other `dissect.*` packages (Fox-IT / NCC Group) | AGPL-3.0-or-later | live disk and image access, NTFS, ESE databases |
+| `libscca-python`, `libmsiecf-python`, `libfwsi-python` (libyal) | LGPL-3.0-or-later | Prefetch, legacy IE `index.dat`, shell items |
+| `python-evtx` | Apache-2.0 | Windows event logs |
+| `regipy`, `LnkParse3`, `PyYAML` | MIT | registry plugins, LNK files, rules |
+| `olefile` | BSD | JumpList OLE containers |
+| Tauri, React, ECharts and the rest of the UI stack | MIT / Apache-2.0 | desktop shell and interface |
+
+The AGPL is the one to be aware of: a distributed build that includes `dissect.target` must make its complete corresponding source available under AGPL terms. This repository already satisfies that for the builds it produces. If you fork the project into something closed-source, swap out or isolate the `dissect` dependency first.
