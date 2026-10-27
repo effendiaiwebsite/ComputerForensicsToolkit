@@ -15,6 +15,7 @@ from regipy.plugins.amcache.amcache import AmCachePlugin
 from regipy.registry import RegistryHive
 
 from core.events import Event, make_event
+from parsers._time import to_iso_utc
 
 PARSER_VERSION = "amcache_hive/0.1.0"
 SOURCE_ARTIFACT = "registry.amcache"
@@ -28,9 +29,10 @@ def parse_amcache_hive(
     *,
     collection_id: str,
     host_id_hint: str,
+    hive: RegistryHive | None = None,
 ) -> list[Event]:
     hive_path_str = str(Path(hive_path).resolve())
-    hive = RegistryHive(hive_path_str)
+    hive = hive or RegistryHive(hive_path_str)
     plugin = AmCachePlugin(hive, as_json=True)
     try:
         plugin.run()
@@ -42,8 +44,10 @@ def parse_amcache_hive(
     for entry in plugin.entries or []:
         if not isinstance(entry, dict):
             continue
+        # regipy snake-cases LowerCaseLongPath to lower_case_long_path.
         program_path = (
-            entry.get("low_case_long_path")
+            entry.get("lower_case_long_path")
+            or entry.get("low_case_long_path")
             or entry.get("full_path")
             or entry.get("file_name")
             or entry.get("name")
@@ -51,6 +55,7 @@ def parse_amcache_hive(
         )
         sha1 = entry.get("sha1")
         publisher = entry.get("publisher")
+        link_date = to_iso_utc(entry.get("link_date"))
         events.append(
             make_event(
                 host_os=HOST_OS,
@@ -69,14 +74,15 @@ def parse_amcache_hive(
                     "file_version": entry.get("file_version"),
                     "is_pe_file": entry.get("is_pe_file"),
                     "is_os_component": entry.get("is_os_component"),
-                    "link_date": entry.get("link_date"),
+                    "link_date": link_date,
                     "program_id": entry.get("program_id"),
                 },
                 collection_id=collection_id,
                 parser_version=PARSER_VERSION,
-                timestamp=entry.get("timestamp")
-                or entry.get("link_date")
-                or entry.get("last_modified"),
+                timestamp=to_iso_utc(entry.get("timestamp"))
+                or link_date
+                or to_iso_utc(entry.get("last_modified_timestamp"))
+                or to_iso_utc(entry.get("last_modified")),
                 raw=entry,
             )
         )

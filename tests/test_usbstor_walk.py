@@ -8,7 +8,7 @@ independently. We drive it with fakes mirroring regipy's ``RegistryKey`` API.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from regipy.exceptions import NoRegistrySubkeysException, RegistryKeyNotFoundException
 
@@ -18,7 +18,7 @@ _USBSTOR_PATH = r"\ControlSet001\Enum\USBSTOR"
 
 
 def _ft(dt: datetime) -> int:
-    return int((dt - datetime(1601, 1, 1, tzinfo=timezone.utc)).total_seconds() * 10_000_000)
+    return int((dt - datetime(1601, 1, 1, tzinfo=UTC)).total_seconds() * 10_000_000)
 
 
 class _Key:
@@ -67,7 +67,7 @@ class _Hive:
 
 
 def _build_hive() -> _Hive:
-    ft = _ft(datetime(2007, 7, 14, 17, 56, 41, tzinfo=timezone.utc))
+    ft = _ft(datetime(2007, 7, 14, 17, 56, 41, tzinfo=UTC))
     # Device 1: Cruzer with a fully-populated serial.
     cruzer_serial = _Key("SNDK3066A40516400406&0", last_modified=ft,
                          subkeys={"Properties": _full_properties("SanDisk Cruzer Mini USB Device")})
@@ -93,8 +93,9 @@ def test_walk_usbstor_keeps_devices_when_one_lacks_properties():
 def test_walk_usbstor_extracts_fields_from_properties():
     entries = _walk_usbstor(_build_hive())
     cruzer = next(e for e in entries if e["serial_number"].startswith("SNDK"))
-    assert cruzer["manufacturer"] == "Ven_SanDisk"
-    assert cruzer["title"] == "Prod_Cruzer_Mini"
+    assert cruzer["manufacturer"] == "SanDisk"
+    assert cruzer["title"] == "Cruzer_Mini"
+    assert cruzer["version"] == "0.1"
     assert cruzer["device_name"] == "SanDisk Cruzer Mini USB Device"
     assert cruzer["last_connected"] == "2007-07-14T17:58:46Z"
 
@@ -104,7 +105,7 @@ def test_walk_usbstor_propertyless_serial_has_no_dates_but_last_write():
     trek = next(e for e in entries if e["serial_number"] == "10120516721518&0")
     assert trek["device_name"] is None
     assert trek["last_connected"] is None
-    assert trek["manufacturer"] == "Ven_TREK"
+    assert trek["manufacturer"] == "TREK"
     assert trek["last_write"] is not None  # key last-modified still gives a timestamp
 
 

@@ -49,6 +49,7 @@ for pkg in (
     "pymsiecf",  # legacy IE index.dat (MSIE Cache File) reader (M15)
     "Evtx",
     "LnkParse3",
+    "olefile",  # JumpList OLE container reader
     "yaml",
     "structlog",
     "msgpack",

@@ -18,7 +18,8 @@ def _record_xml(*, channel: str, event_id: int, computer: str, data: dict[str, s
         "<System>"
         "<Provider Name='Microsoft-Windows-Security-Auditing'/>"
         f"<EventID>{event_id}</EventID>"
-        "<TimeCreated SystemTime='2026-06-11T12:00:00.000Z'/>"
+        # python-evtx renders SystemTime via filetime().isoformat(" "): no T, no Z.
+        "<TimeCreated SystemTime='2026-06-11 12:00:00.123456'/>"
         "<EventRecordID>42</EventRecordID>"
         f"<Channel>{channel}</Channel>"
         f"<Computer>{computer}</Computer>"
@@ -35,14 +36,16 @@ def _kwargs(**overrides):
 
 
 def test_parse_record_xml_extracts_system_fields() -> None:
-    xml = _record_xml(channel="Security", event_id=4624, computer="MSI", data={"TargetUserName": "alice"})
+    xml = _record_xml(
+        channel="Security", event_id=4624, computer="MSI", data={"TargetUserName": "alice"}
+    )
     rec = parse_record_xml(xml)
     assert rec is not None
     assert rec["event_id"] == 4624
     assert rec["channel"] == "Security"
     assert rec["computer"] == "MSI"
     assert rec["data"]["TargetUserName"] == "alice"
-    assert rec["time_created"] == "2026-06-11T12:00:00.000Z"
+    assert rec["time_created"] == "2026-06-11 12:00:00.123456"
 
 
 def test_logon_success_maps_to_logon_event() -> None:
@@ -59,6 +62,47 @@ def test_logon_success_maps_to_logon_event() -> None:
     assert ev.user == "alice"
     assert ev.host_id == "MSI"
     assert ev.source_artifact == "evtx.security"
+    assert ev.timestamp == "2026-06-11T12:00:00.123456Z"
+    assert ev.timestamp_source == "direct"
+
+
+def test_event_data_cannot_shadow_fixed_evidence_keys() -> None:
+    rec = parse_record_xml(_record_xml(
+        channel="Security",
+        event_id=4624,
+        computer="MSI",
+        data={"channel": "spoofed", "event_id": "1", "TargetUserName": "alice"},
+    ))
+    ev = event_from_parsed_record(rec, **_kwargs())
+    assert ev.evidence["channel"] == "Security"
+    assert ev.evidence["event_id"] == 4624
+    assert ev.evidence["TargetUserName"] == "alice"
+
+
+def test_group_membership_user_is_the_member_not_the_group() -> None:
+    rec = parse_record_xml(_record_xml(
+        channel="Security",
+        event_id=4732,
+        computer="MSI",
+        data={
+            "MemberName": "CN=bob,CN=Users,DC=corp,DC=local",
+            "MemberSid": "S-1-5-21-1-2-3-1105",
+            "TargetUserName": "Administrators",
+            "SubjectUserName": "admin",
+        },
+    ))
+    ev = event_from_parsed_record(rec, **_kwargs())
+    assert ev.event_type == "account_change"
+    assert ev.user == "bob"
+    assert "Administrators" in ev.summary
+
+    rec = parse_record_xml(_record_xml(
+        channel="Security",
+        event_id=4728,
+        computer="MSI",
+        data={"MemberName": "-", "TargetUserName": "Domain Admins", "SubjectUserName": "admin"},
+    ))
+    assert event_from_parsed_record(rec, **_kwargs()).user == "admin"
 
 
 def test_logon_failed_maps_to_logon_with_status() -> None:

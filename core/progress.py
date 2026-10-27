@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal
 
 Phase = Literal["pending", "running", "done", "error"]
@@ -31,6 +31,7 @@ class ProgressSnapshot:
     finished_at: str | None
     error: str | None
     by_category: dict[str, int] = field(default_factory=dict)
+    errors: int = 0  # items that failed but did not abort the job
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -69,6 +70,7 @@ class ProgressTracker:
         completed_delta: int = 0,
         total: int | None = None,
         category: str | None = None,
+        errors_delta: int = 0,
     ) -> None:
         with self._lock:
             snap = self._snaps.get(collection_id)
@@ -78,6 +80,8 @@ class ProgressTracker:
                 snap.current_item = current_item
             if completed_delta:
                 snap.completed += completed_delta
+            if errors_delta:
+                snap.errors += errors_delta
             if total is not None:
                 snap.total = total
             if category is not None:
@@ -104,4 +108,4 @@ class ProgressTracker:
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")

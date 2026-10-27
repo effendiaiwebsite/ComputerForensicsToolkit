@@ -23,7 +23,7 @@ from parsers.ie_index_dat import parse_ie_index_dat
 
 # Class names are lowercase to mirror pymsiecf's own ``url``/``leak`` classes —
 # the parser dispatches on ``type(item).__name__``.
-class url:  # noqa: N801
+class url:
     def __init__(self, **kw) -> None:
         self.location = kw.get("location")
         self.type = kw.get("type", "history")
@@ -36,7 +36,7 @@ class url:  # noqa: N801
         self.offset = kw.get("offset", 0)
 
 
-class leak:  # noqa: N801 — a non-url item class that must be skipped
+class leak:
     location = "leaked"
 
 

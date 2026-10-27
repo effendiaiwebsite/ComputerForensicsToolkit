@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -45,7 +45,7 @@ class _FakeSCCA:
     def get_last_run_time(self, idx: int) -> datetime | None:
         if 0 <= idx < len(self._run_times):
             return self._run_times[idx]
-        raise IOError("no more run times")
+        raise OSError("no more run times")
 
     @property
     def number_of_file_metrics_entries(self) -> int:
@@ -75,8 +75,8 @@ def _kwargs(**overrides: Any) -> dict[str, Any]:
 def test_event_uses_first_run_time_as_timestamp() -> None:
     pf = _FakeSCCA(
         run_times=[
-            datetime(2026, 6, 11, 12, 0, 0, tzinfo=timezone.utc),
-            datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 6, 11, 12, 0, 0, tzinfo=UTC),
+            datetime(2026, 6, 10, 12, 0, 0, tzinfo=UTC),
         ],
     )
     ev = _event_from_pf(pf, **_kwargs())
@@ -91,7 +91,7 @@ def test_summary_includes_name_and_run_count() -> None:
     pf = _FakeSCCA(
         executable_filename="NOTEPAD.EXE",
         run_count=42,
-        run_times=[datetime(2026, 6, 11, 12, 0, 0, tzinfo=timezone.utc)],
+        run_times=[datetime(2026, 6, 11, 12, 0, 0, tzinfo=UTC)],
     )
     ev = _event_from_pf(pf, **_kwargs())
     assert "NOTEPAD.EXE" in ev.summary
@@ -101,8 +101,8 @@ def test_summary_includes_name_and_run_count() -> None:
 def test_zero_filetime_run_times_are_skipped() -> None:
     pf = _FakeSCCA(
         run_times=[
-            datetime(1601, 1, 1, tzinfo=timezone.utc),  # FILETIME zero
-            datetime(2026, 6, 10, tzinfo=timezone.utc),
+            datetime(1601, 1, 1, tzinfo=UTC),  # FILETIME zero
+            datetime(2026, 6, 10, tzinfo=UTC),
         ],
     )
     ev = _event_from_pf(pf, **_kwargs())
@@ -117,7 +117,7 @@ def test_program_path_resolved_from_accessed_files() -> None:
             r"\VOLUME{abc}\WINDOWS\SYSTEM32\NTDLL.DLL",
             r"\VOLUME{abc}\WINDOWS\SYSTEM32\WINDOWSPOWERSHELL\V1.0\POWERSHELL.EXE",
         ],
-        run_times=[datetime(2026, 6, 11, tzinfo=timezone.utc)],
+        run_times=[datetime(2026, 6, 11, tzinfo=UTC)],
     )
     ev = _event_from_pf(pf, **_kwargs())
     assert ev.evidence["program_path"].endswith("POWERSHELL.EXE")
@@ -126,12 +126,12 @@ def test_program_path_resolved_from_accessed_files() -> None:
 
 def test_volume_information_collected() -> None:
     pf = _FakeSCCA(
-        run_times=[datetime(2026, 6, 11, tzinfo=timezone.utc)],
+        run_times=[datetime(2026, 6, 11, tzinfo=UTC)],
         volumes=[
             _FakeVolume(
                 device_path=r"\Device\HarddiskVolume3",
                 serial_number=0xAABBCCDD,
-                creation_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                creation_time=datetime(2024, 1, 1, tzinfo=UTC),
             ),
         ],
     )
@@ -145,7 +145,7 @@ def test_volume_information_collected() -> None:
 def test_prefetch_hash_formatted_as_hex() -> None:
     pf = _FakeSCCA(
         prefetch_hash=0x12345678,
-        run_times=[datetime(2026, 6, 11, tzinfo=timezone.utc)],
+        run_times=[datetime(2026, 6, 11, tzinfo=UTC)],
     )
     ev = _event_from_pf(pf, **_kwargs())
     assert ev.evidence["prefetch_hash"] == "0x12345678"

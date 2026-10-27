@@ -1,10 +1,11 @@
 """SAM hive parser — one ``account_change`` event per local user.
 
-regipy's ``SAMParsePlugin`` returns each account's RID and login metadata but
-not the **username** (it never decodes the ``V`` structure's account-name
-field). We decode it ourselves and combine the machine SID (from
-``SAM\\Domains\\Account``) with each RID to produce the full account SID — the
-two facts an examiner usually needs from SAM.
+regipy's ``SAMParsePlugin`` returns each account's RID and login metadata and
+resolves the username through the ``Names`` subkey. That lookup is empty on
+hives whose ``Names`` key is missing or truncated, so we also decode the
+account name straight from each user's ``V`` structure and prefer that, then
+combine the machine SID (from ``SAM\\Domains\\Account``) with each RID to
+produce the full account SID — the two facts an examiner usually needs from SAM.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from regipy.plugins.sam.samparse import SAMParsePlugin
 from regipy.registry import RegistryHive
 
 from core.events import Event, make_event
+from parsers._time import to_iso_utc
 
 PARSER_VERSION = "sam_hive/0.2.0"
 SOURCE_ARTIFACT = "registry.sam"
@@ -36,9 +38,10 @@ def parse_sam_hive(
     *,
     collection_id: str,
     host_id_hint: str,
+    hive: RegistryHive | None = None,
 ) -> list[Event]:
     hive_path_str = str(Path(hive_path).resolve())
-    hive = RegistryHive(hive_path_str)
+    hive = hive or RegistryHive(hive_path_str)
     plugin = SAMParsePlugin(hive, as_json=True)
     try:
         plugin.run()
@@ -56,8 +59,9 @@ def parse_sam_hive(
         sid = f"{machine_sid}-{rid}" if machine_sid and rid is not None else None
         # regipy's key names: last_login / last_failed_login / failed_login_count,
         # and the account state lives in account_flags_parsed (a list of strings).
-        last_logon = entry.get("last_login")
-        password_last_set = entry.get("password_last_set")
+        last_logon = to_iso_utc(entry.get("last_login"))
+        password_last_set = to_iso_utc(entry.get("password_last_set"))
+        last_write = to_iso_utc(entry.get("last_write"))
         flags = [str(f).lower() for f in (entry.get("account_flags_parsed") or [])]
         events.append(
             make_event(
@@ -80,15 +84,19 @@ def parse_sam_hive(
                     "account_flags": entry.get("account_flags_parsed"),
                     "password_last_set": password_last_set,
                     "last_logon": last_logon,
-                    "last_failed_login": entry.get("last_failed_login"),
+                    "last_failed_login": to_iso_utc(entry.get("last_failed_login")),
                     "failed_login_count": entry.get("failed_login_count"),
                     "login_count": entry.get("login_count"),
                     "key_path": entry.get("key_path"),
                 },
                 collection_id=collection_id,
                 parser_version=PARSER_VERSION,
-                timestamp=last_logon or password_last_set or entry.get("last_write"),
-                timestamp_source="direct" if last_logon else ("inferred" if entry.get("last_write") else "none"),
+                timestamp=last_logon or password_last_set or last_write,
+                timestamp_source=(
+                    "direct"
+                    if (last_logon or password_last_set)
+                    else ("inferred" if last_write else "none")
+                ),
                 raw=entry,
             )
         )

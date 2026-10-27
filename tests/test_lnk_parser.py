@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -38,9 +38,9 @@ def test_parse_lnk_emits_file_access_with_target_and_times(tmp_path: Path, patch
 
     patched_lnk({
         "header": {
-            "creation_time": datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc),
-            "modified_time": datetime(2026, 6, 11, 12, 34, 56, tzinfo=timezone.utc),
-            "accessed_time": datetime(2026, 6, 12, 1, 0, 0, tzinfo=timezone.utc),
+            "creation_time": datetime(2026, 6, 1, 10, 0, 0, tzinfo=UTC),
+            "modified_time": datetime(2026, 6, 11, 12, 34, 56, tzinfo=UTC),
+            "accessed_time": datetime(2026, 6, 12, 1, 0, 0, tzinfo=UTC),
             "file_size": 4096,
         },
         "link_info": {
@@ -103,3 +103,40 @@ def test_parse_lnk_swallows_corrupt_file(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(lnk_module, "LnkFile", _Boom)
 
     assert lnk_module.parse_lnk(lnk_path, collection_id="c", host_id_hint="H") == []
+
+
+def test_parse_lnk_composes_unc_path_for_network_targets(tmp_path: Path, patched_lnk):
+    """LnkParse3 reports network targets as location_info.net_name (the share)
+    plus link_info.common_path_suffix; there is no local_base_path at all."""
+    lnk_path = tmp_path / "share.lnk"
+    lnk_path.write_bytes(b"\x00")
+
+    patched_lnk({
+        "header": {"creation_time": None, "modified_time": None, "accessed_time": None},
+        "link_info": {
+            "common_path_suffix": r"Finance\Q3\payroll.xlsx",
+            "location": "Network",
+            "location_info": {
+                "net_name": r"\\FILESRV01\Shared",
+                "device_name": "Z:",
+                "network_provider_type": "WNNC_NET_LANMAN",
+            },
+        },
+        "data": {},
+    })
+
+    ev = lnk_module.parse_lnk(lnk_path, collection_id="c", host_id_hint="H")[0]
+    assert ev.evidence["target_path"] == r"\\FILESRV01\Shared\Finance\Q3\payroll.xlsx"
+    assert ev.evidence["network_share"] == r"\\FILESRV01\Shared"
+
+
+def test_parse_lnk_appends_common_path_suffix_to_local_base(tmp_path: Path, patched_lnk):
+    lnk_path = tmp_path / "local.lnk"
+    lnk_path.write_bytes(b"\x00")
+    patched_lnk({
+        "header": {"creation_time": None, "modified_time": None, "accessed_time": None},
+        "link_info": {"local_base_path": r"C:\Data", "common_path_suffix": r"sub\file.txt"},
+        "data": {},
+    })
+    ev = lnk_module.parse_lnk(lnk_path, collection_id="c", host_id_hint="H")[0]
+    assert ev.evidence["target_path"] == r"C:\Data\sub\file.txt"

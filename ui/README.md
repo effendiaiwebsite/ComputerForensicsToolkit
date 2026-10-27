@@ -1,73 +1,26 @@
-# React + TypeScript + Vite
+# DFT UI
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Desktop front end for the Digital Forensics Triage Toolkit: a Tauri 2 (Rust) shell hosting a Vite + React 19 + TypeScript app (Tailwind 4, shadcn-style components, TanStack Table, Apache ECharts).
 
-Currently, two official plugins are available:
+## Commands
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
+npm run tauri dev     # dev build: Vite on :5173 inside the Tauri window
+npm run build         # tsc -b && vite build
+npx eslint .          # lint
+cd src-tauri && cargo check --quiet
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+The portable, no-install build is produced by `tools/build-portable.ps1` at the repo root (`bundle.active` is off; the build only yields `app.exe`).
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Sidecar
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+All parsing runs in the Python sidecar (`core/`). `src-tauri/src/sidecar.rs` spawns it once (`dft-sidecar/dft-sidecar.exe` next to the app, or `.venv` Python with `-m core` from the source tree; override with `DFT_SIDECAR_PYTHON` / `DFT_SIDECAR_CWD`) and talks JSON lines over stdio: one request per line with a `request_id`, one response per line echoing it. Replies with a foreign or missing `request_id` are skipped; a dead or unresponsive sidecar (`DFT_SIDECAR_TIMEOUT_SECS`, default 600) is killed and respawned on the next call. Release builds write the sidecar's stderr to `dft-sidecar.log` next to the exe. Each Tauri command in `src-tauri/src/lib.rs` wraps one sidecar op; `src/lib/dft.ts` is the typed client.
+
+## Layout
+
+- `src/App.tsx` — state, view switching, modals (live collection, report)
+- `src/components/` — `DetailPane`, `FilesBrowser`, `Timeline`, `BusyDayStrip`, `Welcome`, `ui/` (shadcn primitives)
+- `src/lib/dft.ts` — sidecar op wrappers and result types
+- `src-tauri/` — Rust shell: `lib.rs` (commands), `sidecar.rs` (process + protocol), `elevation.rs`, `tauri.conf.json` (CSP, window)

@@ -26,7 +26,7 @@ rather than aborting the run.
 from __future__ import annotations
 
 import logging
-from datetime import timezone
+from datetime import UTC
 from pathlib import Path
 
 from core.events import Event, make_event
@@ -136,7 +136,7 @@ def _dt_to_iso(dt) -> str | None:
         return None
     try:
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     except (AttributeError, ValueError, OverflowError):
         return None

@@ -47,11 +47,15 @@ class DiscoveredHive:
     user_hint: str | None = None
 
 
+# Files that sit beside hives and share their name but are not hives: event
+# logs (Security.evtx), registry transaction logs (SYSTEM.LOG1, SAM.LOG2,
+# Amcache.hve.LOG1) and the CLFS/TxR files (*.blf, *.regtrans-ms).
+_NON_HIVE_SUFFIX = re.compile(r"^\.(evtx|log\d*|blf|regtrans-ms)$", re.IGNORECASE)
+
+
 def _classify(p: Path) -> HiveKind | None:
     upper = p.name.upper()
-    # Hard exclude file types that share the system-vocab prefix but aren't
-    # registry hives — chiefly event logs (Security.evtx etc.).
-    if p.suffix.lower() == ".evtx":
+    if _NON_HIVE_SUFFIX.match(p.suffix):
         return None
     if upper in _NAME_TO_KIND:
         return _NAME_TO_KIND[upper]
@@ -263,11 +267,14 @@ class DiscoveredRecycleBin:
     user_hint: str | None = None
 
 
+# ``$I`` + six random alphanumerics + the original extension (if any). This
+# also rules out ``$I30``, the NTFS directory-index attribute name.
+_RECYCLE_I_NAME = re.compile(r"^\$I[0-9A-Z]{6}(\..*)?$", re.IGNORECASE)
+
+
 def discover_recycle_bin_files(directory: str | Path) -> list[DiscoveredRecycleBin]:
     """Find every Recycle Bin ``$I`` metadata file under the directory.
 
-    Matches basenames beginning ``$I`` (case-insensitive) but excludes ``$I30``
-    — that is the NTFS directory-index attribute name, not a Recycle Bin record.
     The owning user is left to the parser/SID; ``user_hint`` is filled from a
     ``Users\\<name>`` path segment only when one happens to be present.
     """
@@ -277,7 +284,7 @@ def discover_recycle_bin_files(directory: str | Path) -> list[DiscoveredRecycleB
     found = [
         DiscoveredRecycleBin(path=p, user_hint=_user_from_path(p, root))
         for p in root.rglob("*")
-        if p.is_file() and p.name.lower().startswith("$i") and p.name.lower() != "$i30"
+        if p.is_file() and _RECYCLE_I_NAME.match(p.name)
     ]
     found.sort(key=lambda e: str(e.path))
     return found

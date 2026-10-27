@@ -10,7 +10,7 @@ from parsers.registry import parse_hive
 
 
 def test_unknown_path_bubbles_up(tmp_path: Path) -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(FileNotFoundError):
         parse_hive(
             tmp_path / "missing.hve",
             collection_id="c",

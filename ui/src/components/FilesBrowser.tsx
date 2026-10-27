@@ -15,6 +15,9 @@ import {
 } from "@/lib/dft";
 import { cn } from "@/lib/utils";
 
+// App.tsx remounts this component (key=collectionId) per collection, so all
+// state here — listing, export progress, last export destination — is
+// per-collection by construction.
 export function FilesBrowser({
   collectionId,
   onError,
@@ -24,7 +27,7 @@ export function FilesBrowser({
 }) {
   const [path, setPath] = useState("/");
   const [data, setData] = useState<ListDirResult | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(collectionId !== null);
   const [showHidden, setShowHidden] = useState(true);
   const [filter, setFilter] = useState("");
   const [exportProgress, setExportProgress] = useState<ProgressSnapshot | null>(null);
@@ -38,46 +41,56 @@ export function FilesBrowser({
     onErrorRef.current = onError;
   }, [onError]);
 
-  const load = useCallback(
-    async (p: string) => {
+  // State is only touched inside promise callbacks, so the mount effect below
+  // can call this without a synchronous setState (initial `loading` is true).
+  const fetchDir = useCallback(
+    (p: string) => {
       if (!collectionId) return;
-      setLoading(true);
-      try {
-        const res = await listDir({ collection_id: collectionId, path: p });
-        if (res.ok) {
-          setData(res);
-          setPath(res.path);
-        } else {
-          onErrorRef.current(res.error ?? "list_dir failed");
-        }
-      } catch (err) {
-        onErrorRef.current(err instanceof Error ? err.message : String(err));
-      } finally {
-        setLoading(false);
-      }
+      listDir({ collection_id: collectionId, path: p })
+        .then((res) => {
+          if (res.ok) {
+            setData(res);
+            setPath(res.path);
+          } else {
+            onErrorRef.current(res.error ?? "list_dir failed");
+          }
+        })
+        .catch((err: unknown) => onErrorRef.current(err instanceof Error ? err.message : String(err)))
+        .finally(() => setLoading(false));
     },
     [collectionId],
   );
 
-  useEffect(() => {
-    if (collectionId) void load("/");
-    else setData(null);
-  }, [collectionId, load]);
+  function load(p: string) {
+    setLoading(true);
+    fetchDir(p);
+  }
 
-  // Poll export progress while a job is running.
   useEffect(() => {
-    if (!exportProgress || exportProgress.phase !== "running") return;
-    const key = exportProgress.collection_id;
+    fetchDir("/");
+  }, [fetchDir]);
+
+  // Poll export progress while a job is running. One poll at a time: a slow
+  // sidecar op must not pile up hundreds of get_progress calls.
+  const exportKey = exportProgress?.collection_id;
+  const exportPhase = exportProgress?.phase;
+  useEffect(() => {
+    if (!exportKey || exportPhase !== "running") return;
+    let inFlight = false;
     const handle = window.setInterval(async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
-        const r = await getProgress(key);
+        const r = await getProgress(exportKey);
         if (r.ok && r.progress) setExportProgress(r.progress);
       } catch {
         // transient
+      } finally {
+        inFlight = false;
       }
     }, 500);
     return () => window.clearInterval(handle);
-  }, [exportProgress?.collection_id, exportProgress?.phase]);
+  }, [exportKey, exportPhase]);
 
   async function saveHashReport(fmt: "txt" | "csv") {
     if (!lastExportDest) return;
@@ -183,7 +196,7 @@ export function FilesBrowser({
         <Breadcrumbs
           path={path}
           sourceKind={data?.source_kind ?? "unknown"}
-          onNavigate={(p) => void load(p)}
+          onNavigate={load}
         />
         <div className="ml-auto flex items-center gap-2">
           <Input
@@ -203,7 +216,7 @@ export function FilesBrowser({
           <Button
             size="sm"
             variant="ghost"
-            onClick={() => data?.parent != null && void load(data.parent)}
+            onClick={() => data?.parent != null && load(data.parent)}
             disabled={!data?.parent}
           >
             up
@@ -299,7 +312,7 @@ export function FilesBrowser({
                 <Row
                   key={entry.name}
                   entry={entry}
-                  onOpen={(name) => void load(joinPath(path, name))}
+                  onOpen={(name) => load(joinPath(path, name))}
                 />
               ))}
             </tbody>

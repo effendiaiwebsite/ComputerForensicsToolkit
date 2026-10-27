@@ -17,6 +17,7 @@ import { Welcome } from "@/components/Welcome";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+  defaultCollectionDir,
   enumerateDrives,
   evaluateRules,
   exportEvents,
@@ -132,6 +133,11 @@ function rankEventType(t: string): number {
   return idx === -1 ? 999 : idx;
 }
 
+function sameCounts(a: Record<string, number>, b: Record<string, number>): boolean {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((k) => a[k] === b[k]);
+}
+
 function StatusPill({ state }: { state: SidecarState }) {
   const base =
     "inline-flex items-center gap-2 rounded-full border border-border px-3 py-1 text-xs font-mono";
@@ -225,6 +231,25 @@ export default function App() {
   const [elevated, setElevated] = useState<boolean | null>(null);
   const [liveOpen, setLiveOpen] = useState(false);
   const [liveProgress, setLiveProgress] = useState<ProgressSnapshot | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const collectionId = collection?.collection_id ?? null;
+  const liveId = liveProgress?.collection_id;
+  const livePhase = liveProgress?.phase;
+  const liveLabel = liveProgress?.label;
+  const busy = sidecar.kind === "running" || livePhase === "running";
+
+  const resetCollectionState = useCallback(() => {
+    setSelected(null);
+    setEvents([]);
+    setActiveTypes(new Set());
+    setActiveSeverity(new Set());
+    setFindings([]);
+    setFindingsTotal(0);
+    setFindingsBySeverity({});
+    setTimelineFocus(null);
+    setSelectedDay(null);
+  }, []);
 
   useEffect(() => {
     pingSidecar()
@@ -239,58 +264,68 @@ export default function App() {
     isElevated().then(setElevated).catch(() => setElevated(false));
   }, []);
 
+  // One poll at a time: a slow sidecar op must not pile up get_progress calls.
   useEffect(() => {
-    if (!liveProgress || liveProgress.phase !== "running") return;
-    const id = liveProgress.collection_id;
+    if (!liveId || livePhase !== "running") return;
+    let inFlight = false;
     const handle = window.setInterval(async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
-        const r = await getProgress(id);
+        const r = await getProgress(liveId);
         if (r.ok && r.progress) setLiveProgress(r.progress);
       } catch {
         // transient errors — keep polling
+      } finally {
+        inFlight = false;
       }
     }, 500);
     return () => window.clearInterval(handle);
-  }, [liveProgress?.collection_id, liveProgress?.phase]);
+  }, [liveId, livePhase]);
 
   // When a live collection finishes, switch the active view to it so the
-  // examiner sees the just-collected events without a manual reload.
+  // examiner sees the just-collected events without a manual reload. The
+  // worker already ran evaluate_rules, so findings only need querying.
   useEffect(() => {
-    if (!liveProgress || liveProgress.phase !== "done") return;
-    const cid = liveProgress.collection_id;
+    if (!liveId || livePhase !== "done") return;
     (async () => {
       try {
-        const res = await queryEvents({ collection_id: cid, limit: 1 });
+        const res = await queryEvents({ collection_id: liveId, limit: 1 });
         if (!res.ok) return;
+        const fr = await queryFindings({ collection_id: liveId, limit: 1 });
+        resetCollectionState();
         setCollection({
-          collection_id: cid,
-          host_id: "—",
-          label: liveProgress.label,
+          collection_id: liveId,
+          host_id: res.events[0]?.host_id ?? "—",
+          label: liveLabel ?? "live collection",
           event_count: res.total,
           by_event_type: res.by_event_type,
           by_source_artifact: res.by_source_artifact,
         });
-        setSelected(null);
-        setActiveTypes(new Set());
-        setActiveSeverity(new Set());
+        if (fr.ok) {
+          setFindingsTotal(fr.total);
+          setFindingsBySeverity(fr.by_severity);
+        }
         setView("events");
       } catch (err) {
         console.warn("auto-load after live collection failed", err);
       }
     })();
-  }, [liveProgress?.collection_id, liveProgress?.phase]);
+  }, [liveId, livePhase, liveLabel, resetCollectionState]);
 
   useEffect(() => {
     const id = setTimeout(() => setDebouncedFilter(filter), 250);
     return () => clearTimeout(id);
   }, [filter]);
 
+  // Depends on collectionId, not the collection object: the events branch
+  // below refreshes the counts on `collection`, which must not re-trigger this.
   const refresh = useCallback(async () => {
-    if (!collection) return;
+    if (!collectionId) return;
     if (view === "execution") {
       try {
         const res = await queryProgramExecutionComposite({
-          collection_id: collection.collection_id,
+          collection_id: collectionId,
           limit: 1000,
         });
         if (res.ok) {
@@ -307,7 +342,7 @@ export default function App() {
     if (view === "timeline") {
       try {
         const res = await queryTimeline({
-          collection_id: collection.collection_id,
+          collection_id: collectionId,
           summary_contains: debouncedFilter || undefined,
           event_types: activeTypes.size ? Array.from(activeTypes) : undefined,
           limit: 100_000,
@@ -319,7 +354,7 @@ export default function App() {
         } else {
           setSidecar({ kind: "error", message: res.error ?? "timeline query failed" });
         }
-        const act = await queryActivityByDay({ collection_id: collection.collection_id });
+        const act = await queryActivityByDay({ collection_id: collectionId });
         if (act.ok) {
           setActivityDays(act.days);
           setActivityThreshold(act.threshold);
@@ -332,7 +367,7 @@ export default function App() {
     if (view === "devices") {
       try {
         const res = await queryUsbDevices({
-          collection_id: collection.collection_id,
+          collection_id: collectionId,
           limit: 1000,
         });
         if (res.ok) {
@@ -348,7 +383,7 @@ export default function App() {
     if (view === "browser") {
       try {
         const res = await queryBrowserDomains({
-          collection_id: collection.collection_id,
+          collection_id: collectionId,
           limit: 1000,
         });
         if (res.ok) {
@@ -364,7 +399,7 @@ export default function App() {
     if (view === "findings") {
       try {
         const res = await queryFindings({
-          collection_id: collection.collection_id,
+          collection_id: collectionId,
           severities: activeSeverity.size ? Array.from(activeSeverity) : undefined,
           limit: 500,
         });
@@ -385,7 +420,7 @@ export default function App() {
     const sort_dir = sorting[0]?.desc ? "desc" : "asc";
     try {
       const res = await queryEvents({
-        collection_id: collection.collection_id,
+        collection_id: collectionId,
         summary_contains: debouncedFilter || undefined,
         event_types: activeTypes.size ? Array.from(activeTypes) : undefined,
         sort_by,
@@ -395,30 +430,35 @@ export default function App() {
       if (res.ok) {
         setEvents(res.events);
         setTotal(res.total);
-        setCollection((c) =>
-          c
-            ? {
+        setCollection((c) => {
+          if (!c || c.collection_id !== collectionId) return c;
+          const unchanged =
+            c.event_count === res.total &&
+            sameCounts(c.by_event_type, res.by_event_type) &&
+            sameCounts(c.by_source_artifact, res.by_source_artifact);
+          return unchanged
+            ? c
+            : {
                 ...c,
                 event_count: res.total,
                 by_event_type: res.by_event_type,
                 by_source_artifact: res.by_source_artifact,
-              }
-            : c,
-        );
+              };
+        });
       } else {
         setSidecar({ kind: "error", message: res.error ?? "query failed" });
       }
     } catch (err) {
       setSidecar({ kind: "error", message: err instanceof Error ? err.message : String(err) });
     }
-  }, [collection, view, debouncedFilter, sorting, activeTypes, activeSeverity]);
+  }, [collectionId, view, debouncedFilter, sorting, activeTypes, activeSeverity]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
   async function openHive() {
-    let path: string | null = null;
+    let path: string | null;
     try {
       const selection = await openDialog({
         multiple: false,
@@ -433,13 +473,7 @@ export default function App() {
     if (!path) return;
 
     setSidecar({ kind: "running", what: "parsing hive" });
-    setSelected(null);
-    setEvents([]);
-    setActiveTypes(new Set());
-    setActiveSeverity(new Set());
-    setFindings([]);
-    setFindingsTotal(0);
-    setFindingsBySeverity({});
+    resetCollectionState();
     try {
       const res = await runTriageHive({ hive_path: path });
       if (!res.ok) {
@@ -469,7 +503,7 @@ export default function App() {
   }
 
   async function openDirectory() {
-    let dir: string | null = null;
+    let dir: string | null;
     try {
       const selection = await openDialog({
         multiple: false,
@@ -484,13 +518,7 @@ export default function App() {
     if (!dir) return;
 
     setSidecar({ kind: "running", what: "parsing directory" });
-    setSelected(null);
-    setEvents([]);
-    setActiveTypes(new Set());
-    setActiveSeverity(new Set());
-    setFindings([]);
-    setFindingsTotal(0);
-    setFindingsBySeverity({});
+    resetCollectionState();
     try {
       const res = await runTriageDirectory(dir);
       if (!res.ok) {
@@ -560,6 +588,7 @@ export default function App() {
     }
   }
 
+  // eslint-disable-next-line react-hooks/incompatible-library -- React Compiler is not enabled; this only warns that auto-memoization would be skipped
   const table = useReactTable({
     data: events,
     columns,
@@ -590,13 +619,13 @@ export default function App() {
           </div>
           <div className="flex items-center gap-3 shrink-0">
             <StatusPill state={sidecar} />
-            <Button onClick={openHive} disabled={sidecar.kind === "running"} size="sm">
+            <Button onClick={openHive} disabled={busy} size="sm">
               <FolderOpen className="h-4 w-4" />
               Open hive…
             </Button>
             <Button
               onClick={openDirectory}
-              disabled={sidecar.kind === "running"}
+              disabled={busy}
               size="sm"
               variant="secondary"
             >
@@ -614,7 +643,7 @@ export default function App() {
             </Button>
             <Button
               onClick={() => setLiveOpen(true)}
-              disabled={sidecar.kind === "running" || liveProgress?.phase === "running"}
+              disabled={busy}
               size="sm"
               title={
                 elevated === false
@@ -754,13 +783,27 @@ export default function App() {
         />
       )}
 
+      {notice && (
+        <div className="flex items-center gap-2 border-b border-accent/40 bg-accent/10 px-4 py-1.5 font-mono text-xs text-accent">
+          <FileText className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate select-all" title={notice}>{notice}</span>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="ml-auto h-6 w-6"
+            onClick={() => setNotice(null)}
+            aria-label="Dismiss"
+          >
+            <X className="h-3 w-3" />
+          </Button>
+        </div>
+      )}
+
       {reportOpen && collection && (
         <ReportModal
           collection={collection}
           onClose={() => setReportOpen(false)}
-          onGenerated={(path) =>
-            setSidecar({ kind: "ok", info: { ok: true, sidecar_version: `saved: ${path}` } })
-          }
+          onGenerated={(path) => setNotice(`report saved: ${path}`)}
           onError={(message) => setSidecar({ kind: "error", message })}
         />
       )}
@@ -848,6 +891,7 @@ export default function App() {
             {!collection ? (
               <Welcome
                 elevated={elevated}
+                busy={busy}
                 onOpenHive={openHive}
                 onOpenDirectory={openDirectory}
                 onCollectLive={() => setLiveOpen(true)}
@@ -964,7 +1008,8 @@ export default function App() {
                 onToggleSeverity={(s) =>
                   setActiveSeverity((prev) => {
                     const next = new Set(prev);
-                    next.has(s) ? next.delete(s) : next.add(s);
+                    if (next.has(s)) next.delete(s);
+                    else next.add(s);
                     return next;
                   })
                 }
@@ -1001,7 +1046,8 @@ export default function App() {
               <BrowserTable domains={browserDomains} hasCollection={!!collection} />
             ) : (
               <FilesBrowser
-                collectionId={collection?.collection_id ?? null}
+                key={collection.collection_id}
+                collectionId={collection.collection_id}
                 onError={(msg) => setSidecar({ kind: "error", message: msg })}
               />
             )}
@@ -1255,9 +1301,9 @@ function DevicesTable({
         </tr>
       </thead>
       <tbody>
-        {devices.map((d) => (
+        {devices.map((d, i) => (
           <tr
-            key={d.serial ?? `unknown-${d.first_event_id}`}
+            key={`${i}:${d.serial ?? ""}`}
             className={cn(
               "border-b border-border hover:bg-muted/40",
               d.first_event_id ? "cursor-pointer" : "",
@@ -1390,8 +1436,12 @@ function LiveCollectModal({
     enumerateDrives()
       .then((r) => setDrives(r.ok ? r.drives : []))
       .catch(() => setDrives([]));
+    // Absolute default: <app folder>/collected/<ts>. A relative path would be
+    // resolved against the sidecar's cwd, which the examiner cannot see.
     const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    setDestDir(`collected/${ts}`);
+    defaultCollectionDir()
+      .then((base) => setDestDir((cur) => cur || `${base.replace(/[\\/]+$/, "")}\\${ts}`))
+      .catch(() => undefined);
   }, []);
 
   async function browseImage() {

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 import struct
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from core.events import Event, make_event
@@ -36,7 +36,7 @@ SOURCE_ARTIFACT = "recycle_bin"
 
 logger = logging.getLogger(__name__)
 
-_FILETIME_EPOCH = datetime(1601, 1, 1, tzinfo=timezone.utc)
+_FILETIME_EPOCH = datetime(1601, 1, 1, tzinfo=UTC)
 _HEADER = struct.Struct("<qqq")  # version, original_size, deletion_filetime
 
 

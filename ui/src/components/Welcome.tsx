@@ -9,11 +9,13 @@ import { cn } from "@/lib/utils";
  */
 export function Welcome({
   elevated,
+  busy = false,
   onOpenHive,
   onOpenDirectory,
   onCollectLive,
 }: {
   elevated: boolean | null;
+  busy?: boolean;
   onOpenHive: () => void;
   onOpenDirectory: () => void;
   onCollectLive: () => void;
@@ -38,6 +40,7 @@ export function Welcome({
             body="Parse a single registry hive file (SYSTEM, NTUSER.DAT, AmCache, or browser History) and view its events."
             footnote="No admin required"
             onClick={onOpenHive}
+            disabled={busy}
           />
           <Tile
             icon={<FolderTree className="h-5 w-5" />}
@@ -45,6 +48,7 @@ export function Welcome({
             body="Triage a folder of mirrored Windows artifacts — registry hives, .evtx, .pf, .lnk, JumpLists, browser History."
             footnote="No admin required"
             onClick={onOpenDirectory}
+            disabled={busy}
           />
           <Tile
             icon={<HardDrive className="h-5 w-5" />}
@@ -61,6 +65,7 @@ export function Welcome({
               )
             }
             onClick={onCollectLive}
+            disabled={busy}
           />
         </div>
 

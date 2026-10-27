@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from core.events import Event, make_event, utc_iso
 
@@ -18,7 +18,7 @@ def test_make_event_infers_timestamp_source_direct() -> None:
         evidence={"a": 1},
         collection_id="col-1",
         parser_version="p/0.1",
-        timestamp=datetime(2026, 6, 11, 12, 0, 0, tzinfo=timezone.utc),
+        timestamp=datetime(2026, 6, 11, 12, 0, 0, tzinfo=UTC),
     )
     assert ev.timestamp == "2026-06-11T12:00:00Z"
     assert ev.timestamp_source == "direct"

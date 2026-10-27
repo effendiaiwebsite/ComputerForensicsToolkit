@@ -19,7 +19,7 @@ import io
 import logging
 import re
 import struct
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +27,7 @@ import olefile
 from LnkParse3.lnk_file import LnkFile
 
 from core.events import Event, make_event
-from parsers.lnk import _iso, _jsonable
+from parsers.lnk import _iso, _jsonable, target_path_from_lnk
 
 PARSER_VERSION = "jumplist/0.1.0"
 SOURCE_ARTIFACT = "jumplist"
@@ -67,34 +67,39 @@ def parse_jumplist(
         logger.exception("jumplist not an OLE container: %s", path_str)
         return []
 
-    dest_list = _try_parse_dest_list(ole)
+    try:
+        dest_list = _try_parse_dest_list(ole)
 
-    events: list[Event] = []
-    for stream in ole.listdir():
-        if not (len(stream) == 1 and re.fullmatch(r"[0-9a-fA-F]+", stream[0])):
-            continue
-        try:
-            entry_id = int(stream[0], 16)
-        except ValueError:
-            continue
-        try:
-            raw_bytes = ole.openstream(stream).read()
-        except Exception:
-            continue
-        ev = _parse_embedded_lnk(
-            raw_bytes,
-            source_path=path_str,
-            collection_id=collection_id,
-            host_id_hint=host_id_hint,
-            user_hint=user_hint,
-            app_id=app_id,
-            app_name=app_name,
-            entry_id=entry_id,
-            dest_list_entry=dest_list.get(entry_id),
-        )
-        if ev is not None:
-            events.append(ev)
-    return events
+        events: list[Event] = []
+        for stream in ole.listdir():
+            if not (len(stream) == 1 and re.fullmatch(r"[0-9a-fA-F]+", stream[0])):
+                continue
+            try:
+                entry_id = int(stream[0], 16)
+            except ValueError:
+                continue
+            try:
+                raw_bytes = ole.openstream(stream).read()
+            except Exception:
+                continue
+            ev = _parse_embedded_lnk(
+                raw_bytes,
+                source_path=path_str,
+                collection_id=collection_id,
+                host_id_hint=host_id_hint,
+                user_hint=user_hint,
+                app_id=app_id,
+                app_name=app_name,
+                entry_id=entry_id,
+                dest_list_entry=dest_list.get(entry_id),
+            )
+            if ev is not None:
+                events.append(ev)
+        return events
+    finally:
+        close = getattr(ole, "close", None)
+        if callable(close):
+            close()
 
 
 def _parse_embedded_lnk(
@@ -122,12 +127,7 @@ def _parse_embedded_lnk(
     location_info = link_info.get("location_info") or {}
     string_data = data.get("data") or {}
 
-    target_path = (
-        link_info.get("local_base_path")
-        or link_info.get("local_base_path_unicode")
-        or string_data.get("relative_path")
-        or "<unknown>"
-    )
+    target_path = target_path_from_lnk(link_info, string_data)
 
     target_modified = _iso(header.get("modified_time"))
     target_accessed = _iso(header.get("accessed_time"))
@@ -163,6 +163,8 @@ def _parse_embedded_lnk(
             "drive_type": location_info.get("drive_type"),
             "drive_serial": location_info.get("drive_serial_number"),
             "volume_label": location_info.get("volume_label"),
+            "network_share": location_info.get("net_name")
+            or location_info.get("net_name_unicode"),
         },
         collection_id=collection_id,
         parser_version=PARSER_VERSION,
@@ -176,11 +178,32 @@ def _parse_embedded_lnk(
     )
 
 
+_DEST_LIST_HEADER_SIZE = 32
+
+# DestList entry layouts keyed by header version (int32 at stream offset 0):
+# (path-length offset, path offset, trailing bytes after the path). The first
+# 112 bytes (checksum, droids, hostname, entry id, FILETIME at +100, pin at
+# +108) are identical; version 1 (Win7/8) puts the path length right after,
+# versions 3/4 (Win10+) insert 16 bytes (-1, access count, 8 unknown) first
+# and pad each entry with 4 bytes.
+_DEST_LIST_WIN7 = (112, 114, 0)
+_DEST_LIST_WIN10 = (128, 130, 4)
+
+
+def _dest_list_layout(version: int) -> tuple[int, int, int] | None:
+    if version == 1:
+        return _DEST_LIST_WIN7
+    if version >= 3:
+        return _DEST_LIST_WIN10
+    return None
+
+
 def _try_parse_dest_list(ole: olefile.OleFileIO) -> dict[int, dict[str, Any]]:
     """Walk the ``DestList`` stream best-effort.
 
-    Layout differs across Windows builds; we treat the entire parse as
-    untrusted and return an empty mapping on any structural surprise.
+    The whole parse is treated as untrusted: an unknown header version or
+    any structural surprise returns what was decoded so far (possibly
+    nothing), and the caller degrades to LNK-only metadata.
     """
     try:
         if not ole.exists("DestList"):
@@ -188,29 +211,31 @@ def _try_parse_dest_list(ole: olefile.OleFileIO) -> dict[int, dict[str, Any]]:
         data = ole.openstream("DestList").read()
     except Exception:
         return {}
-    if len(data) < 32:
+    if len(data) < _DEST_LIST_HEADER_SIZE:
         return {}
 
+    version = struct.unpack_from("<i", data, 0)[0]
+    layout = _dest_list_layout(version)
+    if layout is None:
+        logger.debug("unknown DestList version %d; skipping", version)
+        return {}
+    len_off, path_off, trailing = layout
+
     out: dict[int, dict[str, Any]] = {}
-    pos = 32
+    pos = _DEST_LIST_HEADER_SIZE
     try:
-        while pos + 130 <= len(data):
-            # Last 8 bytes before path (offsets are layout-dependent; this
-            # follows the most common Win10 layout). On parse failure we
-            # bail out — degraded gracefully back to LNK-only metadata.
+        while pos + path_off <= len(data):
             entry_id = struct.unpack_from("<I", data, pos + 88)[0]
             filetime = struct.unpack_from("<Q", data, pos + 100)[0]
             pin_status = struct.unpack_from("<i", data, pos + 108)[0]
-            path_size = struct.unpack_from("<H", data, pos + 128)[0]
+            path_chars = struct.unpack_from("<H", data, pos + len_off)[0]
 
-            access_iso = _filetime_to_iso(filetime)
             out[entry_id] = {
-                "last_access": access_iso,
+                "last_access": _filetime_to_iso(filetime),
                 "pin_status": pin_status,
             }
 
-            entry_total = 130 + path_size * 2 + 4
-            pos += entry_total
+            pos += path_off + path_chars * 2 + trailing
     except (struct.error, ValueError):
         # Layout drift; what we have so far is still valid.
         return out
@@ -225,6 +250,6 @@ def _filetime_to_iso(filetime: int) -> str | None:
         seconds = filetime / 10_000_000 - 11_644_473_600
         if seconds <= 0:
             return None
-        return datetime.fromtimestamp(seconds, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return datetime.fromtimestamp(seconds, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     except (OverflowError, ValueError):
         return None

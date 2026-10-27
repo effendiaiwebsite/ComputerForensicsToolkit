@@ -10,11 +10,12 @@ Emits three event types:
 * ``browser_bookmark`` — one per URL row in ``moz_bookmarks`` (type 1) joined
   with ``moz_places``
 
-The DB is opened **read-only, immutable** via a SQLite URI so we never mutate
-the artifact. Missing tables/columns are tolerated silently — Firefox has
-reworked this schema repeatedly (``moz_origins``, the downloads-to-annotations
-move in FF 26, ``rev_host`` formatting), and a missing table just means "no
-events of this kind to emit."
+The DB is opened read-only through :mod:`parsers._sqlite` (a temp-dir snapshot
+when a ``-wal``/``-journal`` sidecar is present, ``immutable=1`` in place
+otherwise) so we never mutate the artifact. Missing tables/columns are
+tolerated silently — Firefox has reworked this schema repeatedly
+(``moz_origins``, the downloads-to-annotations move in FF 26, ``rev_host``
+formatting), and a missing table just means "no events of this kind to emit."
 
 Firefox timestamps are **microseconds since the Unix epoch** (PRTime) — a
 different epoch from Chromium's 1601 WebKit time. Download ``endTime`` inside
@@ -26,11 +27,13 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from contextlib import ExitStack
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from core.events import Event, make_event
+from parsers._sqlite import open_sqlite_readonly
 from parsers.browser import (
     _clip,
     _columns,
@@ -46,7 +49,7 @@ SOURCE_ARTIFACT = "firefox.history"
 
 logger = logging.getLogger(__name__)
 
-_UNIX_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_UNIX_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 # Firefox nsINavHistoryService transition types (moz_historyvisits.visit_type).
 _VISIT_TYPE = {
@@ -70,23 +73,19 @@ def parse_firefox_history(
     user_hint: str | None = None,
 ) -> list[Event]:
     path_str = str(Path(db_path).resolve())
-    try:
-        conn = sqlite3.connect(
-            f"file:{Path(path_str).as_posix()}?mode=ro&immutable=1",
-            uri=True,
-        )
-    except sqlite3.Error:
-        logger.exception("could not open firefox places db %s", path_str)
-        return []
-    conn.row_factory = sqlite3.Row
-    try:
+    with ExitStack() as stack:
+        try:
+            conn = stack.enter_context(open_sqlite_readonly(path_str))
+        except (sqlite3.Error, OSError):
+            logger.exception("could not open firefox places db %s", path_str)
+            return []
+        conn.row_factory = sqlite3.Row
+        args = (path_str, collection_id, host_id_hint, user_hint)
         events: list[Event] = []
-        events.extend(_emit_visits(conn, path_str, collection_id, host_id_hint, user_hint))
-        events.extend(_emit_downloads(conn, path_str, collection_id, host_id_hint, user_hint))
-        events.extend(_emit_bookmarks(conn, path_str, collection_id, host_id_hint, user_hint))
+        events.extend(_emit_visits(conn, *args))
+        events.extend(_emit_downloads(conn, *args))
+        events.extend(_emit_bookmarks(conn, *args))
         return events
-    finally:
-        conn.close()
 
 
 # ----- visits ------------------------------------------------------------------

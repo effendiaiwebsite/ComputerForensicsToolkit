@@ -303,6 +303,10 @@ export async function isElevated(): Promise<boolean> {
   return invoke<boolean>("is_elevated");
 }
 
+export async function defaultCollectionDir(): Promise<string> {
+  return invoke<string>("default_collection_dir");
+}
+
 export async function enumerateDrives(): Promise<EnumerateDrivesResult> {
   return invoke<EnumerateDrivesResult>("enumerate_drives");
 }

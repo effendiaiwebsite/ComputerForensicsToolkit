@@ -14,6 +14,7 @@ from regipy.plugins.usrclass.shellbags_usrclass import ShellBagUsrclassPlugin
 from regipy.registry import RegistryHive
 
 from core.events import Event, make_event
+from parsers._time import to_iso_utc
 
 PARSER_VERSION = "usrclass_hive/0.1.0"
 SOURCE_ARTIFACT = "registry.usrclass"
@@ -28,9 +29,10 @@ def parse_usrclass_hive(
     collection_id: str,
     host_id_hint: str,
     user_hint: str | None = None,
+    hive: RegistryHive | None = None,
 ) -> list[Event]:
     hive_path_str = str(Path(hive_path).resolve())
-    hive = RegistryHive(hive_path_str)
+    hive = hive or RegistryHive(hive_path_str)
     plugin = ShellBagUsrclassPlugin(hive, as_json=True)
     try:
         plugin.run()
@@ -45,6 +47,9 @@ def parse_usrclass_hive(
     for entry in plugin.entries or []:
         path = entry.get("path") or entry.get("value") or "<unknown>"
         shell_type = entry.get("shell_type")
+        creation_time = to_iso_utc(entry.get("creation_time"))
+        access_time = to_iso_utc(entry.get("access_time"))
+        modification_time = to_iso_utc(entry.get("modification_time"))
         events.append(
             make_event(
                 host_os=HOST_OS,
@@ -57,18 +62,18 @@ def parse_usrclass_hive(
                 evidence={
                     "path": path,
                     "shell_type": shell_type,
-                    "creation_time": entry.get("creation_time"),
-                    "access_time": entry.get("access_time"),
-                    "modification_time": entry.get("modification_time"),
+                    "creation_time": creation_time,
+                    "access_time": access_time,
+                    "modification_time": modification_time,
                     "mru_order_location": entry.get("mru_order_location"),
                     "reg_path": entry.get("reg_path"),
                 },
                 collection_id=collection_id,
                 parser_version=PARSER_VERSION,
-                timestamp=entry.get("modification_time")
-                or entry.get("access_time")
-                or entry.get("creation_time")
-                or entry.get("last_write"),
+                timestamp=modification_time
+                or access_time
+                or creation_time
+                or to_iso_utc(entry.get("last_write")),
                 raw=entry,
             )
         )

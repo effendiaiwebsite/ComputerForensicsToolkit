@@ -10,9 +10,9 @@ if it grows to assume new attributes, the test must grow with it.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
 
 import pytest
 
@@ -61,15 +61,15 @@ class FakePath:
     def open(self, mode: str = "rb"):
         return self._concrete.open(mode)
 
-    def iterdir(self) -> Iterator["FakePath"]:
+    def iterdir(self) -> Iterator[FakePath]:
         for child in self._concrete.iterdir():
             yield FakePath(self._root, str(child.relative_to(self._root)).replace("\\", "/"))
 
-    def rglob(self, pattern: str) -> Iterator["FakePath"]:
+    def rglob(self, pattern: str) -> Iterator[FakePath]:
         for child in self._concrete.rglob(pattern):
             yield FakePath(self._root, str(child.relative_to(self._root)).replace("\\", "/"))
 
-    def relative_to(self, other: "FakePath") -> Path:
+    def relative_to(self, other: FakePath) -> Path:
         return self._concrete.relative_to(other._concrete)
 
     def __str__(self) -> str:
@@ -246,7 +246,9 @@ def test_no_windows_volume_raises_early(tmp_path: Path) -> None:
     # _resolve_windows_root catches the missing /Windows dir up front (one audit
     # entry); the legacy post-probe path (five skipped specs) still applies
     # whenever /Windows is present but the SYSTEM/SOFTWARE/etc. hives aren't.
-    with pytest.raises(NoWindowsVolumeError, match="(No Windows volume|canonical Windows system hives)"):
+    with pytest.raises(
+        NoWindowsVolumeError, match=r"(No Windows volume|canonical Windows system hives)"
+    ):
         collect_live(
             target,
             collection_id="c",
@@ -299,3 +301,64 @@ def test_open_target_translates_device_paths_to_local(monkeypatch) -> None:
     open_target(r"C:\images\evidence.E01")
 
     assert seen == ["local", "local", "local", r"C:\images\evidence.E01"]
+
+
+def _run_collect(tmp_path: Path, files: list[FakeFile], users: list[FakeUser]):
+    src_root = tmp_path / "src"
+    dest_root = tmp_path / "dest"
+    src_root.mkdir()
+    dest_root.mkdir()
+    _materialize(src_root, files)
+    audit = AuditLog(dest_root / "audit.jsonl")
+    progress = ProgressTracker()
+    progress.start("c", label="t", total=0)
+    result = collect_live(
+        FakeTarget(src_root, users),
+        collection_id="c", dest_dir=dest_root, audit=audit, progress=progress,
+        source_label="fake://sidecars",
+    )
+    return result, dest_root, audit.read_all()
+
+
+def test_sqlite_wal_sidecars_are_collected_when_present(tmp_path: Path) -> None:
+    chrome = "Users/alice/AppData/Local/Google/Chrome/User Data/Default/History"
+    places = (
+        "Users/alice/AppData/Roaming/Mozilla/Firefox/Profiles/abcd.default-release/places.sqlite"
+    )
+    webcache_dir = "Users/alice/AppData/Local/Microsoft/Windows/WebCache"
+    result, dest_root, records = _run_collect(tmp_path, [
+        FakeFile("Windows/System32/config/SYSTEM", b"sys"),
+        FakeFile(chrome, b"history"),
+        FakeFile(chrome + "-wal", b"history-wal"),
+        FakeFile(places, b"places"),
+        FakeFile(places + "-wal", b"places-wal"),
+        FakeFile(places + "-journal", b"places-journal"),
+        FakeFile(f"{webcache_dir}/WebCacheV01.dat", b"ese"),
+        FakeFile(f"{webcache_dir}/V01.log", b"log"),
+        FakeFile(f"{webcache_dir}/V01.chk", b"chk"),
+        FakeFile(f"{webcache_dir}/V01res00001.jrs", b"jrs"),
+    ], [FakeUser(name="alice", home="/Users/alice")])
+
+    for rel in (
+        chrome, chrome + "-wal", places, places + "-wal", places + "-journal",
+        f"{webcache_dir}/WebCacheV01.dat", f"{webcache_dir}/V01.log",
+        f"{webcache_dir}/V01.chk", f"{webcache_dir}/V01res00001.jrs",
+    ):
+        assert (dest_root / rel).exists(), rel
+    # A missing sidecar is simply not attempted: no "not present" noise for it.
+    skipped_paths = [r["source_path"] for r in records if r["status"] == "skipped"]
+    assert not any(p.endswith("History-journal") for p in skipped_paths)
+    assert result.errors == 0
+
+
+def test_directory_at_artifact_path_is_audited_as_not_a_regular_file(tmp_path: Path) -> None:
+    result, _dest_root, records = _run_collect(tmp_path, [
+        FakeFile("Windows/System32/config/SYSTEM", b"sys"),
+        FakeFile("Windows/System32/config/SAM/placeholder", b"x"),  # SAM is a directory
+    ], [])
+    sam = [r for r in records if r["source_path"].endswith("config/SAM")]
+    assert sam and sam[0]["status"] == "skipped"
+    assert sam[0]["error"] == "not a regular file"
+    software = [r for r in records if r["source_path"].endswith("config/SOFTWARE")]
+    assert software[0]["error"] == "not present"
+    assert result.errors == 0

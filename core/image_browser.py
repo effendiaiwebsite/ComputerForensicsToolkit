@@ -27,7 +27,7 @@ import os
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -90,8 +90,14 @@ class ImageBrowser:
 
     def close_all(self) -> None:
         with self._lock:
+            targets = list(self._targets.items())
             self._targets.clear()
             self._roots.clear()
+        for collection_id, target in targets:
+            try:
+                target.close()
+            except Exception:
+                logger.exception("closing target for %s failed", collection_id)
 
     def list_dir(
         self,
@@ -137,7 +143,7 @@ class ImageBrowser:
             try:
                 stat = child.stat()
                 size = stat.st_size if child.is_file() else None
-                mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                mtime = datetime.fromtimestamp(stat.st_mtime, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
             except OSError:
                 size, mtime = None, None
             entries.append(FileEntry(
@@ -196,7 +202,7 @@ class ImageBrowser:
         node = root.path(path)
         try:
             children = list(_safe_iterdir(node))
-        except Exception:  # noqa: BLE001
+        except Exception:
             children = []
         if not children and not (node.exists() and node.is_dir()):
             raise FileNotFoundError(f"directory not found on image: {path}")
@@ -205,7 +211,7 @@ class ImageBrowser:
             try:
                 is_dir = child.is_dir()
                 is_file = child.is_file() if not is_dir else False
-            except Exception:  # noqa: BLE001
+            except Exception:
                 is_dir, is_file = False, False
             size: int | None = None
             mtime: str | None = None
@@ -215,10 +221,10 @@ class ImageBrowser:
                     size = int(getattr(stat, "st_size", 0) or 0) or None
                     raw_mtime = getattr(stat, "st_mtime", None)
                     if raw_mtime:
-                        mtime = datetime.fromtimestamp(float(raw_mtime), tz=timezone.utc).strftime(
+                        mtime = datetime.fromtimestamp(float(raw_mtime), tz=UTC).strftime(
                             "%Y-%m-%dT%H:%M:%SZ"
                         )
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
             name = child.name
             entry_kind = "dir" if is_dir else "file" if is_file else "other"
@@ -307,16 +313,15 @@ def _entry_hidden(child: Any, name: str) -> bool:
                 fa = getattr(a, "file_attributes", None)
                 if fa is not None:
                     return bool(int(fa) & _FILE_ATTRIBUTE_HIDDEN)
-    except Exception:  # noqa: BLE001 — not NTFS, or attribute unavailable
+    except Exception:
         pass
     return _is_hidden_name(name)
 
 
 def _safe_iterdir(node: Any) -> Iterator[Any]:
     try:
-        for child in node.iterdir():
-            yield child
-    except Exception:  # noqa: BLE001
+        yield from node.iterdir()
+    except Exception:
         logger.exception("iterdir failed for %s", node)
         return
 
@@ -332,10 +337,26 @@ class FolderExportResult:
     bytes_copied: int
     errors: int
     audit_path: str
+    walk_error: str | None = None  # set when the source walk aborted: the export is partial
+
+
+def export_dest_error(dest_dir: str | Path, source_path: str) -> str | None:
+    """Why ``dest_dir`` must not be used as an export target, or ``None`` if it is safe.
+
+    Copying a file onto itself truncates the source, so the destination may never
+    be the collection source nor (for directory-mode collections) anywhere inside it.
+    """
+    dest_root = Path(dest_dir).resolve()
+    src_root = Path(source_path).resolve()
+    if dest_root == src_root:
+        return f"export destination is the collection source itself: {dest_root}"
+    if src_root.is_dir() and dest_root.is_relative_to(src_root):
+        return f"export destination {dest_root} lies inside the collection source {src_root}"
+    return None
 
 
 def export_folder(
-    browser: "ImageBrowser",
+    browser: ImageBrowser,
     *,
     collection_id: str,
     src_path: str,
@@ -356,6 +377,9 @@ def export_folder(
     collections (dissect.target walk via the cached root).
     """
     dest_root = Path(dest_dir).resolve()
+    dest_error = export_dest_error(dest_root, source_path)
+    if dest_error:
+        raise ValueError(dest_error)
     dest_root.mkdir(parents=True, exist_ok=True)
 
     kind = _classify_source(source_path)
@@ -416,11 +440,11 @@ def _export_from_directory(
             counters.files += 1
             counters.bytes += size
             progress.update(progress_key, completed_delta=1, category="export")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.exception("export failed for %s", f)
             audit.error("export", str(f), exc, category="export")
             counters.errors += 1
-            progress.update(progress_key, completed_delta=1)
+            progress.update(progress_key, completed_delta=1, errors_delta=1)
     return FolderExportResult(
         src_path=src_path,
         dest_dir=str(dest_root),
@@ -433,7 +457,7 @@ def _export_from_directory(
 
 def _export_via_dissect(
     *,
-    browser: "ImageBrowser",
+    browser: ImageBrowser,
     collection_id: str,
     src_path: str,
     source_path: str,
@@ -442,14 +466,20 @@ def _export_via_dissect(
     progress: Any,
     progress_key: str,
 ) -> FolderExportResult:
-    root = browser._get_root(collection_id, source_path)  # noqa: SLF001 — same module
+    root = browser._get_root(collection_id, source_path)
     node = root.path(src_path)
     if not node.exists() or not node.is_dir():
         raise NotADirectoryError(f"source is not a directory on image: {src_path}")
 
-    files = list(_iter_image_files(node))
+    files, walk_exc = _collect_image_files(node)
     progress.update(progress_key, total=len(files))
     counters = _FolderCounters()
+    walk_error: str | None = None
+    if walk_exc is not None:
+        walk_error = f"{type(walk_exc).__name__}: {walk_exc}"
+        audit.error("export_walk", src_path, walk_exc, category="export")
+        counters.errors += 1
+        progress.update(progress_key, errors_delta=1)
     for f in files:
         rel = _safe_relpath(f, node)
         target = dest_root / rel
@@ -468,11 +498,11 @@ def _export_via_dissect(
             counters.files += 1
             counters.bytes += size
             progress.update(progress_key, completed_delta=1, category="export")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.exception("export failed for %s", f)
             audit.error("export", str(f), exc, category="export")
             counters.errors += 1
-            progress.update(progress_key, completed_delta=1)
+            progress.update(progress_key, completed_delta=1, errors_delta=1)
     return FolderExportResult(
         src_path=src_path,
         dest_dir=str(dest_root),
@@ -480,6 +510,7 @@ def _export_via_dissect(
         bytes_copied=counters.bytes,
         errors=counters.errors,
         audit_path=str(audit.path),
+        walk_error=walk_error,
     )
 
 
@@ -490,27 +521,33 @@ class _FolderCounters:
     errors: int = 0
 
 
-def _iter_image_files(node: Any) -> Iterator[Any]:
+def _collect_image_files(node: Any) -> tuple[list[Any], BaseException | None]:
+    """Walk ``node`` recursively; return the files found and the exception that
+    aborted the walk (if any) so a partial export is never reported as complete."""
+    files: list[Any] = []
     try:
         for child in node.rglob("*"):
             try:
                 if child.is_file():
-                    yield child
-            except Exception:  # noqa: BLE001
+                    files.append(child)
+            except Exception:
                 continue
-    except Exception:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("rglob failed for %s", node)
-        return
+        return files, exc
+    return files, None
 
 
 def _safe_relpath(entry: Any, root: Any) -> str:
     try:
         return str(entry.relative_to(root)).replace("\\", "/")
-    except Exception:  # noqa: BLE001
+    except Exception:
         return str(getattr(entry, "name", "file"))
 
 
 def _hash_copy_local(src: Path, dest: Path) -> tuple[str, int]:
+    if src.resolve() == dest.resolve():
+        raise ValueError(f"refusing to copy {src} onto itself")
     dest.parent.mkdir(parents=True, exist_ok=True)
     h = hashlib.sha256()
     size = 0

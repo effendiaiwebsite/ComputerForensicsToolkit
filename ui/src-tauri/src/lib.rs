@@ -2,7 +2,7 @@ mod elevation;
 mod sidecar;
 
 use serde_json::{json, Value};
-use tauri::{Manager, State};
+use tauri::{Manager, RunEvent, State};
 
 use crate::sidecar::Sidecar;
 
@@ -192,6 +192,14 @@ fn is_elevated() -> bool {
     elevation::is_elevated()
 }
 
+/// Absolute base folder for collections: `<sidecar working dir>/collected`.
+#[tauri::command]
+fn default_collection_dir() -> Result<String, String> {
+    sidecar::working_dir()
+        .map(|d| d.join("collected").to_string_lossy().into_owned())
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn list_dir(
     sidecar: State<'_, Sidecar>,
@@ -270,11 +278,19 @@ pub fn run() {
             run_live_collection,
             get_progress,
             is_elevated,
+            default_collection_dir,
             list_dir,
             export_folder,
             export_hash_report,
             export_events,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Tauri exits via process::exit, so kill_on_drop never runs;
+            // stop a mid-parse sidecar explicitly.
+            if let RunEvent::Exit = event {
+                app.state::<Sidecar>().shutdown();
+            }
+        });
 }

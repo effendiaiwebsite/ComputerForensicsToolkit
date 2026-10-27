@@ -10,8 +10,9 @@ so the on-disk bytes are irrelevant; only the mocked DB matters.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -23,7 +24,7 @@ _FILETIME_EPOCH_DELTA = 11_644_473_600  # seconds between 1601 and 1970
 
 
 def _to_filetime(dt: datetime) -> int:
-    unix = (dt.astimezone(timezone.utc) - datetime(1970, 1, 1, tzinfo=timezone.utc)).total_seconds()
+    unix = (dt.astimezone(UTC) - datetime(1970, 1, 1, tzinfo=UTC)).total_seconds()
     return int((unix + _FILETIME_EPOCH_DELTA) * 10_000_000)
 
 
@@ -50,9 +51,9 @@ class _FakeTable:
 class _FakeESE:
     """Constructed as ``ESE(fh)``; ignores fh, serves canned tables."""
 
-    _TABLES: dict[str, list[dict]] = {}
+    _TABLES: ClassVar[dict[str, list[dict]]] = {}
 
-    def __init__(self, fh) -> None:  # noqa: ARG002
+    def __init__(self, fh) -> None:
         self._tables = {name: _FakeTable(name, recs) for name, recs in self._TABLES.items()}
 
     def tables(self):
@@ -66,8 +67,8 @@ def _make_fake_ese(tables: dict[str, list[dict]]):
     return type("_FakeESE", (_FakeESE,), {"_TABLES": tables})
 
 
-_T1 = _to_filetime(datetime(2023, 5, 1, 12, 0, 0, tzinfo=timezone.utc))
-_T2 = _to_filetime(datetime(2023, 5, 1, 12, 5, 0, tzinfo=timezone.utc))
+_T1 = _to_filetime(datetime(2023, 5, 1, 12, 0, 0, tzinfo=UTC))
+_T2 = _to_filetime(datetime(2023, 5, 1, 12, 5, 0, tzinfo=UTC))
 
 # ResponseHeaders blob: split('\x00')[-3:-1] => (url, path)
 _RESP_HEADERS = "\x00".join(
@@ -87,8 +88,18 @@ _WEBCACHE_TABLES = {
         {"Name": "Cookies", "ContainerId": 3},
     ],
     "Container_1": [
-        {"Url": "Visited: wes@https://www.example.com/", "AccessedTime": _T1, "AccessCount": 4, "EntryId": 10},
-        {"Url": "Visited: wes@https://attack.mitre.org/", "AccessedTime": _T2, "AccessCount": 1, "EntryId": 11},
+        {
+            "Url": "Visited: wes@https://www.example.com/",
+            "AccessedTime": _T1,
+            "AccessCount": 4,
+            "EntryId": 10,
+        },
+        {
+            "Url": "Visited: wes@https://attack.mitre.org/",
+            "AccessedTime": _T2,
+            "AccessCount": 1,
+            "EntryId": 11,
+        },
         {"Url": "", "AccessedTime": _T1, "AccessCount": 0, "EntryId": 12},  # empty → skipped
     ],
     "Container_2": [
@@ -114,7 +125,7 @@ def webcache_file(tmp_path: Path, monkeypatch) -> Path:
 def test_to_filetime_decodes_back_via_wintimestamp():
     from dissect.util.ts import wintimestamp
 
-    dt = datetime(2023, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
+    dt = datetime(2023, 5, 1, 12, 0, 0, tzinfo=UTC)
     assert wintimestamp(_to_filetime(dt)).replace(microsecond=0) == dt
 
 
@@ -122,7 +133,9 @@ def test_to_filetime_decodes_back_via_wintimestamp():
 
 
 def test_parse_emits_visits_and_downloads(webcache_file: Path):
-    events = parse_ie_webcache(webcache_file, collection_id="c", host_id_hint="HOST", user_hint="wes")
+    events = parse_ie_webcache(
+        webcache_file, collection_id="c", host_id_hint="HOST", user_hint="wes"
+    )
     by_type: dict[str, int] = {}
     for e in events:
         by_type[e.event_type] = by_type.get(e.event_type, 0) + 1
@@ -158,6 +171,31 @@ def test_parse_returns_empty_on_unparsable_db(tmp_path: Path, monkeypatch):
     p = tmp_path / "WebCacheV01.dat"
     p.write_bytes(b"garbage")
     assert parse_ie_webcache(p, collection_id="c", host_id_hint="H") == []
+
+
+def test_bad_timestamp_row_does_not_abort_the_file(tmp_path: Path, monkeypatch):
+    """dissect may hand back an already-decoded datetime, and a corrupt value
+    raises TypeError inside wintimestamp; either way only that row's time is lost."""
+    decoded = datetime(2023, 5, 1, 12, 0, 0, tzinfo=UTC)
+    tables = {
+        "Containers": [{"Name": "History", "ContainerId": 1}],
+        "Container_1": [
+            {"Url": "Visited: wes@https://a.example/", "AccessedTime": decoded, "EntryId": 1},
+            {"Url": "Visited: wes@https://b.example/", "AccessedTime": "garbage", "EntryId": 2},
+            {"Url": "Visited: wes@https://c.example/", "AccessedTime": _T1, "EntryId": 3},
+        ],
+    }
+    monkeypatch.setattr("dissect.database.ese.ESE", _make_fake_ese(tables))
+    p = tmp_path / "WebCacheV01.dat"
+    p.write_bytes(b"x")
+
+    events = parse_ie_webcache(p, collection_id="c", host_id_hint="H")
+
+    by_url = {e.evidence["url"]: e for e in events}
+    assert set(by_url) == {"https://a.example/", "https://b.example/", "https://c.example/"}
+    assert by_url["https://a.example/"].timestamp == "2023-05-01T12:00:00Z"
+    assert by_url["https://b.example/"].timestamp is None
+    assert by_url["https://c.example/"].timestamp == "2023-05-01T12:00:00Z"
 
 
 def test_parse_tolerates_missing_containers_table(tmp_path: Path, monkeypatch):

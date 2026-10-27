@@ -51,7 +51,7 @@ def detect_browser_kind(path: str | Path) -> BrowserKind:
 def collect_browser_history(
     path: str | Path,
     *,
-    host_id: str | None = None,  # noqa: ARG001 — kept for symmetry with sibling collectors
+    host_id: str | None = None,
     browser_kind: BrowserKind | None = None,
 ) -> CollectedBrowserHistory:
     src = Path(path).resolve()

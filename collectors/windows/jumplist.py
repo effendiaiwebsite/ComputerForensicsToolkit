@@ -19,7 +19,7 @@ class CollectedJumpList:
 def collect_jumplist(
     path: str | Path,
     *,
-    host_id: str | None = None,  # noqa: ARG001
+    host_id: str | None = None,
 ) -> CollectedJumpList:
     src = Path(path).resolve()
     if not src.exists():

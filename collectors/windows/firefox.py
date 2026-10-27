@@ -24,7 +24,7 @@ class CollectedFirefoxHistory:
 def collect_firefox_history(
     path: str | Path,
     *,
-    host_id: str | None = None,  # noqa: ARG001 — kept for symmetry with siblings
+    host_id: str | None = None,
 ) -> CollectedFirefoxHistory:
     src = Path(path).resolve()
     if not src.exists():

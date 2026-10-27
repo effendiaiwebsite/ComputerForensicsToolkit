@@ -25,7 +25,7 @@ class CollectedRecycleBin:
 def collect_recycle_bin(
     path: str | Path,
     *,
-    host_id: str | None = None,  # noqa: ARG001 — kept for symmetry with siblings
+    host_id: str | None = None,
 ) -> CollectedRecycleBin:
     src = Path(path).resolve()
     if not src.exists():

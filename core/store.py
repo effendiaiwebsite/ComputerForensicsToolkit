@@ -11,16 +11,18 @@ evolve fields without migrations during Phase 1. We keep ``timestamp`` and
 
 from __future__ import annotations
 
+import functools
 import json
 import sqlite3
-from collections.abc import Iterable
+import threading
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, ParamSpec, TypeVar
 
 from core import SCHEMA_VERSION
 from core.events import Event
 
-_SCHEMA = """
+_SCHEMA = r"""
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -85,16 +87,37 @@ _SORT_COLUMNS = {
     "summary",
 }
 
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _locked(fn: Callable[_P, _R]) -> Callable[_P, _R]:
+    """Serialize connection use: the live-collection worker thread writes while
+    the stdio thread serves reads on the same ``check_same_thread=False`` handle."""
+
+    @functools.wraps(fn)
+    def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        self = args[0]
+        with self._lock:  # type: ignore[attr-defined]
+            return fn(*args, **kwargs)
+
+    return wrapper
+
+
+def _like_pattern(needle: str) -> str:
+    """Wrap ``needle`` in ``%`` for LIKE, escaping its own ``%``/``_``/``\\``."""
+    escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+_LIKE_ESCAPE = "ESCAPE '\\'"
+
 
 class EventStore:
     """Thin wrapper over sqlite3 with the queries the UI needs."""
 
     def __init__(self, path: str | Path = ":memory:") -> None:
-        # check_same_thread=False lets the live-collection worker thread reuse
-        # this connection after the main thread spawned it; sqlite3 itself
-        # serializes statements internally with the GIL, and our access pattern
-        # is single-writer (worker) + occasional read (main stdio loop), so we
-        # don't need an explicit lock. WAL improves concurrent read tolerance.
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -105,9 +128,11 @@ class EventStore:
             (str(SCHEMA_VERSION),),
         )
 
+    @_locked
     def close(self) -> None:
         self._conn.close()
 
+    @_locked
     def register_collection(
         self,
         collection_id: str,
@@ -118,11 +143,13 @@ class EventStore:
         source_path: str | None = None,
     ) -> None:
         self._conn.execute(
-            "INSERT OR REPLACE INTO collections(collection_id, host_id, host_os, created_at, note, source_path) "
+            "INSERT OR REPLACE INTO collections"
+            "(collection_id, host_id, host_os, created_at, note, source_path) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (collection_id, host_id, host_os, created_at, note, source_path),
         )
 
+    @_locked
     def set_collection_source(self, collection_id: str, source_path: str) -> None:
         """Update the source_path of an existing collection (e.g. after directory
         triage discovers it under a parent we want the Files tab to root from)."""
@@ -131,6 +158,15 @@ class EventStore:
             (source_path, collection_id),
         )
 
+    @_locked
+    def set_collection_host(self, collection_id: str, host_id: str) -> None:
+        """Replace the placeholder host_id once triage discovers the real one."""
+        self._conn.execute(
+            "UPDATE collections SET host_id = ? WHERE collection_id = ?",
+            (host_id, collection_id),
+        )
+
+    @_locked
     def get_collection(self, collection_id: str) -> dict[str, Any] | None:
         row = self._conn.execute(
             "SELECT collection_id, host_id, host_os, created_at, note, source_path "
@@ -139,6 +175,7 @@ class EventStore:
         ).fetchone()
         return dict(row) if row else None
 
+    @_locked
     def timestamp_range(
         self,
         *,
@@ -158,6 +195,7 @@ class EventStore:
             return None, None
         return row["lo"], row["hi"]
 
+    @_locked
     def insert_events(self, events: Iterable[Event]) -> int:
         rows = [
             (
@@ -190,6 +228,7 @@ class EventStore:
         )
         return len(rows)
 
+    @_locked
     def query_events(
         self,
         *,
@@ -229,22 +268,23 @@ class EventStore:
             where.append(f"source_artifact IN ({placeholders})")
             params.extend(source_artifacts)
         if summary_contains:
-            where.append("summary LIKE ?")
-            params.append(f"%{summary_contains}%")
+            where.append(f"summary LIKE ? {_LIKE_ESCAPE}")
+            params.append(_like_pattern(summary_contains))
 
         where_sql = f" WHERE {' AND '.join(where)}" if where else ""
-        # NULLS LAST for timestamp asc so undated events fall to the bottom.
-        nulls = "NULLS LAST" if sort_dir.lower() == "asc" else "NULLS FIRST"
+        # Undated rows sort to the bottom in both directions so "newest first"
+        # still leads with dated events.
         sql = (
             "SELECT event_id, collection_id, timestamp, timestamp_source, host_os, "
             "host_id, user, source_artifact, source_path, event_type, summary, "
             "evidence_json, raw_json, parser_version FROM events"
-            f"{where_sql} ORDER BY {sort_by} {sort_dir.upper()} {nulls} LIMIT ? OFFSET ?"
+            f"{where_sql} ORDER BY {sort_by} {sort_dir.upper()} NULLS LAST LIMIT ? OFFSET ?"
         )
         params.extend([limit, offset])
         rows = self._conn.execute(sql, params).fetchall()
         return [_row_to_dict(row) for row in rows]
 
+    @_locked
     def insert_findings(self, findings: Iterable[Any]) -> int:
         rows = [
             (
@@ -274,6 +314,7 @@ class EventStore:
         )
         return len(rows)
 
+    @_locked
     def clear_findings(self, *, collection_id: str | None = None) -> int:
         if collection_id is None:
             cur = self._conn.execute("DELETE FROM findings")
@@ -283,6 +324,7 @@ class EventStore:
             )
         return cur.rowcount or 0
 
+    @_locked
     def query_findings(
         self,
         *,
@@ -324,6 +366,7 @@ class EventStore:
         rows = self._conn.execute(sql, params).fetchall()
         return [_finding_row_to_dict(r) for r in rows]
 
+    @_locked
     def count_findings(self, *, collection_id: str | None = None) -> int:
         if collection_id is None:
             row = self._conn.execute("SELECT COUNT(*) AS c FROM findings").fetchone()
@@ -334,6 +377,7 @@ class EventStore:
             ).fetchone()
         return int(row["c"])
 
+    @_locked
     def counts_by_severity(self, *, collection_id: str | None = None) -> dict[str, int]:
         if collection_id is None:
             rows = self._conn.execute(
@@ -347,13 +391,18 @@ class EventStore:
             ).fetchall()
         return {row["severity"]: int(row["c"]) for row in rows}
 
+    @_locked
     def query_usb_devices(
         self,
         *,
         collection_id: str | None = None,
         limit: int = 1000,
     ) -> list[dict[str, Any]]:
-        """Group ``usb_connection`` events by serial → one row per device."""
+        """Group ``usb_connection`` events by serial → one row per device.
+
+        Events without a serial fall back to their registry instance key, then
+        to the event itself, so unserialized devices never collapse into one row.
+        """
         where = ["event_type = 'usb_connection'"]
         params: list[Any] = []
         if collection_id is not None:
@@ -362,6 +411,8 @@ class EventStore:
         where_sql = " WHERE " + " AND ".join(where)
         sql = (
             "SELECT json_extract(evidence_json, '$.serial') AS serial, "
+            "COALESCE(json_extract(evidence_json, '$.serial'), "
+            "json_extract(evidence_json, '$.key_path'), event_id) AS device_key, "
             "json_extract(evidence_json, '$.vendor') AS vendor, "
             "json_extract(evidence_json, '$.product') AS product, "
             "json_extract(evidence_json, '$.device_name') AS device_name, "
@@ -372,13 +423,19 @@ class EventStore:
             "MIN(event_id) AS first_event_id "
             "FROM events"
             f"{where_sql} "
-            "GROUP BY serial "
+            "GROUP BY device_key "
             "ORDER BY last_connected DESC NULLS LAST LIMIT ?"
         )
         params.append(limit)
         rows = self._conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            d = dict(r)
+            d.pop("device_key", None)
+            out.append(d)
+        return out
 
+    @_locked
     def query_browser_domains(
         self,
         *,
@@ -443,6 +500,7 @@ class EventStore:
             })
         return out
 
+    @_locked
     def get_event(self, event_id: str) -> dict[str, Any] | None:
         row = self._conn.execute(
             "SELECT event_id, collection_id, timestamp, timestamp_source, host_os, "
@@ -452,6 +510,7 @@ class EventStore:
         ).fetchone()
         return _row_to_dict(row) if row else None
 
+    @_locked
     def count_events(self, *, collection_id: str | None = None) -> int:
         if collection_id is None:
             row = self._conn.execute("SELECT COUNT(*) AS c FROM events").fetchone()
@@ -462,6 +521,7 @@ class EventStore:
             ).fetchone()
         return int(row["c"])
 
+    @_locked
     def counts_by_event_type(self, *, collection_id: str | None = None) -> dict[str, int]:
         if collection_id is None:
             rows = self._conn.execute(
@@ -475,6 +535,7 @@ class EventStore:
             ).fetchall()
         return {row["event_type"]: int(row["c"]) for row in rows}
 
+    @_locked
     def program_execution_composite(
         self,
         *,
@@ -543,6 +604,7 @@ class EventStore:
             })
         return out
 
+    @_locked
     def program_execution_composite_count(self, *, collection_id: str | None = None) -> int:
         """Number of distinct programs in the composite view."""
         coalesce_path = (
@@ -569,6 +631,7 @@ class EventStore:
         row = self._conn.execute(sql, params).fetchone()
         return int(row["c"])
 
+    @_locked
     def query_timeline_points(
         self,
         *,
@@ -593,8 +656,8 @@ class EventStore:
             where.append(f"source_artifact IN ({placeholders})")
             params.extend(source_artifacts)
         if summary_contains:
-            where.append("summary LIKE ?")
-            params.append(f"%{summary_contains}%")
+            where.append(f"summary LIKE ? {_LIKE_ESCAPE}")
+            params.append(_like_pattern(summary_contains))
 
         sql = (
             "SELECT event_id, timestamp, source_artifact, event_type, summary "
@@ -605,6 +668,7 @@ class EventStore:
         rows = self._conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
+    @_locked
     def activity_by_day(self, *, collection_id: str | None = None) -> list[dict[str, Any]]:
         """Per-calendar-day event counts with a per-event-type breakdown.
 
@@ -630,6 +694,7 @@ class EventStore:
             d["by_event_type"][r["event_type"]] = r["c"]
         return list(per_day.values())
 
+    @_locked
     def events_on_day(
         self,
         day: str,
@@ -656,6 +721,7 @@ class EventStore:
         params.append(limit)
         return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
 
+    @_locked
     def count_undated_events(
         self,
         *,
@@ -678,14 +744,15 @@ class EventStore:
             where.append(f"source_artifact IN ({placeholders})")
             params.extend(source_artifacts)
         if summary_contains:
-            where.append("summary LIKE ?")
-            params.append(f"%{summary_contains}%")
+            where.append(f"summary LIKE ? {_LIKE_ESCAPE}")
+            params.append(_like_pattern(summary_contains))
         row = self._conn.execute(
             "SELECT COUNT(*) AS c FROM events WHERE " + " AND ".join(where),
             params,
         ).fetchone()
         return int(row["c"])
 
+    @_locked
     def counts_by_source_artifact(self, *, collection_id: str | None = None) -> dict[str, int]:
         if collection_id is None:
             rows = self._conn.execute(

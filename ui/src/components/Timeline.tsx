@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 import ReactECharts from "echarts-for-react";
-import type { EChartsOption, ECharts } from "echarts";
+import type { EChartsOption } from "echarts";
 
 import type { TimelinePoint } from "@/lib/dft";
 
@@ -98,7 +98,7 @@ export function Timeline({
         textStyle: { color: "#e6e8eb", fontFamily: "JetBrains Mono, monospace", fontSize: 11 },
         formatter: (params: unknown) => {
           const p = params as { data: [number, number, string, string]; seriesName: string };
-          const [tsMs, catIdx, _eventId, summary] = p.data;
+          const [tsMs, catIdx, , summary] = p.data;
           const when = new Date(tsMs).toISOString();
           const cat = categories[catIdx] ?? "?";
           return `<div style="max-width:480px;white-space:normal">`
@@ -151,11 +151,6 @@ export function Timeline({
       />
     </div>
   );
-}
-
-// echarts requires a getEchartsInstance helper; expose if needed later.
-export function getInstance(ref: React.RefObject<ReactECharts | null>): ECharts | undefined {
-  return ref.current?.getEchartsInstance();
 }
 
 function escapeHtml(s: string): string {

@@ -9,8 +9,9 @@ AmCache and ShimCache.
 
 from __future__ import annotations
 
+import contextlib
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -44,10 +45,8 @@ def parse_prefetch(
         logger.exception("could not parse prefetch %s", path_str)
         return []
     finally:
-        try:
+        with contextlib.suppress(Exception):
             scca.close()
-        except Exception:
-            pass
 
 
 def _event_from_pf(
@@ -60,6 +59,10 @@ def _event_from_pf(
     run_count = _safe_attr(scca, "run_count")
     format_version = _safe_attr(scca, "format_version")
     prefetch_hash = _safe_attr(scca, "prefetch_hash")
+    if isinstance(prefetch_hash, int):
+        prefetch_hash_str = f"0x{prefetch_hash:08X}"
+    else:
+        prefetch_hash_str = prefetch_hash
 
     run_times = _collect_run_times(scca)
     last_run = run_times[0] if run_times else None
@@ -83,7 +86,7 @@ def _event_from_pf(
             "program_path": program_path,
             "executable_filename": exe_name,
             "run_count": run_count,
-            "prefetch_hash": f"0x{prefetch_hash:08X}" if isinstance(prefetch_hash, int) else prefetch_hash,
+            "prefetch_hash": prefetch_hash_str,
             "format_version": format_version,
             "last_run_time": last_run,
             "previous_run_times": run_times[1:] if len(run_times) > 1 else [],
@@ -122,8 +125,6 @@ def _collect_run_times(scca: Any) -> list[str]:
     for i in range(8):
         try:
             dt = scca.get_last_run_time(i)
-        except (IOError, OSError, ValueError):
-            continue
         except Exception:
             continue
         if dt is None:
@@ -140,7 +141,7 @@ def _to_utc_iso(dt: datetime) -> str | None:
         return None
     if dt.tzinfo is None:
         return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _collect_file_metrics(scca: Any) -> list[str]:

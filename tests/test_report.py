@@ -21,7 +21,6 @@ from core.report import generate_report
 from core.rules import Finding
 from core.store import EventStore
 
-
 _CID = "col-report-test"
 
 

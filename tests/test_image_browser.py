@@ -57,7 +57,9 @@ def _seed_tree(root: Path) -> None:
     (root / "Users" / "alice" / "Documents").mkdir(parents=True)
     # write_bytes to avoid Windows \n -> \r\n translation in size assertions
     (root / "Users" / "alice" / "Documents" / "note.txt").write_bytes(b"hello\n")
-    (root / "Users" / "alice" / "Documents" / "secret.pdf").write_bytes(b"\x25PDF-1.4\n" + b"x" * 1024)
+    (root / "Users" / "alice" / "Documents" / "secret.pdf").write_bytes(
+        b"\x25PDF-1.4\n" + b"x" * 1024
+    )
     (root / "Users" / "alice" / ".bashrc").write_bytes(b"export PATH=...\n")
     (root / "Users" / "Public").mkdir(parents=True)
     (root / "Windows" / "System32" / "config").mkdir(parents=True)
@@ -169,7 +171,7 @@ def test_hash_report_text_and_csv(tmp_path: Path) -> None:
     audit.error("copy", "/src/d", RuntimeError("locked"))
 
     txt = tmp_path / "report.txt"
-    rows, size = generate_hash_report(tmp_path / "audit.jsonl", txt, format="txt")
+    rows, _size = generate_hash_report(tmp_path / "audit.jsonl", txt, format="txt")
     assert rows == 2
     body = txt.read_text(encoding="utf-8")
     assert "Records: 2" in body

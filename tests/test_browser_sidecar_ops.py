@@ -10,7 +10,10 @@ from tests.test_browser_parser import _build_history_db
 
 
 def _chrome_history_path(root: Path) -> Path:
-    chrome_dir = root / "Users" / "alice" / "AppData" / "Local" / "Google" / "Chrome" / "User Data" / "Default"
+    chrome_dir = (
+        root / "Users" / "alice" / "AppData" / "Local" / "Google" / "Chrome"
+        / "User Data" / "Default"
+    )
     chrome_dir.mkdir(parents=True)
     db_path = chrome_dir / "History"
     _build_history_db(db_path)

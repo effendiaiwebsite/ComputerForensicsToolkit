@@ -29,8 +29,7 @@ from core.audit import AuditLog
 from core.progress import ProgressTracker
 
 if TYPE_CHECKING:
-    from dissect.target import Target
-    from dissect.target.helpers.fsutil import TargetPath
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +75,9 @@ def enumerate_physical_drives() -> list[PhysicalDrive]:
         logger.warning("Get-Disk failed: %s", exc)
         return []
     if ps.returncode != 0 or not ps.stdout.strip():
-        logger.warning("Get-Disk returned no data (rc=%s, stderr=%s)", ps.returncode, ps.stderr.strip())
+        logger.warning(
+            "Get-Disk returned no data (rc=%s, stderr=%s)", ps.returncode, ps.stderr.strip(),
+        )
         return []
     import json as _json
 
@@ -95,7 +96,10 @@ def enumerate_physical_drives() -> list[PhysicalDrive]:
             device=f"\\\\.\\PhysicalDrive{int(num)}",
             model=str(entry.get("FriendlyName") or "Unknown"),
             size_bytes=int(entry.get("Size") or 0),
-            serial=(str(entry.get("SerialNumber")).strip() or None) if entry.get("SerialNumber") else None,
+            serial=(
+                (str(entry.get("SerialNumber")).strip() or None)
+                if entry.get("SerialNumber") else None
+            ),
         ))
     return out
 
@@ -117,47 +121,93 @@ class ArtifactSpec:
     glob: bool = False  # copy every regular file under the path (recursive)
     filename: str | None = None  # when globbing, only files with this basename (case-insensitive)
     name_prefix: str | None = None  # when globbing, only files whose basename starts with this
+    # Suffixes appended to the file name that name companion files to copy when
+    # present (SQLite ``-wal``/``-journal``); a missing sidecar is not audited.
+    sidecar_suffixes: tuple[str, ...] = ()
 
+
+_SQLITE_SIDECARS: tuple[str, ...] = ("-wal", "-journal")
 
 _SYSTEM_ARTIFACTS: tuple[ArtifactSpec, ...] = (
     ArtifactSpec("SYSTEM hive",   "registry", system_path="/Windows/System32/config/SYSTEM"),
     ArtifactSpec("SOFTWARE hive", "registry", system_path="/Windows/System32/config/SOFTWARE"),
     ArtifactSpec("SAM hive",      "registry", system_path="/Windows/System32/config/SAM"),
     ArtifactSpec("SECURITY hive", "registry", system_path="/Windows/System32/config/SECURITY"),
-    ArtifactSpec("AmCache",       "registry", system_path="/Windows/AppCompat/Programs/Amcache.hve"),
+    ArtifactSpec("AmCache", "registry", system_path="/Windows/AppCompat/Programs/Amcache.hve"),
 )
 
 _SYSTEM_GLOBS: tuple[ArtifactSpec, ...] = (
-    ArtifactSpec("Prefetch",      "prefetch", system_path="/Windows/Prefetch", glob=True),
-    ArtifactSpec("Event logs",    "evtx",     system_path="/Windows/System32/winevt/Logs", glob=True),
+    ArtifactSpec("Prefetch", "prefetch", system_path="/Windows/Prefetch", glob=True),
+    ArtifactSpec("Event logs", "evtx", system_path="/Windows/System32/winevt/Logs", glob=True),
 )
 
 _USER_ARTIFACTS: tuple[ArtifactSpec, ...] = (
-    ArtifactSpec("NTUSER.DAT",         "registry", user_relative="NTUSER.DAT"),
-    ArtifactSpec("UsrClass.dat",       "registry", user_relative="AppData/Local/Microsoft/Windows/UsrClass.dat"),
-    ArtifactSpec("Chrome History",     "browser",  user_relative="AppData/Local/Google/Chrome/User Data/Default/History"),
-    ArtifactSpec("Edge History",       "browser",  user_relative="AppData/Local/Microsoft/Edge/User Data/Default/History"),
-    ArtifactSpec("Brave History",      "browser",  user_relative="AppData/Local/BraveSoftware/Brave-Browser/User Data/Default/History"),
-    ArtifactSpec("IE/Edge WebCache",   "browser",  user_relative="AppData/Local/Microsoft/Windows/WebCache/WebCacheV01.dat"),
+    ArtifactSpec("NTUSER.DAT", "registry", user_relative="NTUSER.DAT"),
+    ArtifactSpec(
+        "UsrClass.dat", "registry",
+        user_relative="AppData/Local/Microsoft/Windows/UsrClass.dat",
+    ),
+    ArtifactSpec(
+        "Chrome History", "browser",
+        user_relative="AppData/Local/Google/Chrome/User Data/Default/History",
+        sidecar_suffixes=_SQLITE_SIDECARS,
+    ),
+    ArtifactSpec(
+        "Edge History", "browser",
+        user_relative="AppData/Local/Microsoft/Edge/User Data/Default/History",
+        sidecar_suffixes=_SQLITE_SIDECARS,
+    ),
+    ArtifactSpec(
+        "Brave History", "browser",
+        user_relative="AppData/Local/BraveSoftware/Brave-Browser/User Data/Default/History",
+        sidecar_suffixes=_SQLITE_SIDECARS,
+    ),
+    ArtifactSpec(
+        "IE/Edge WebCache", "browser",
+        user_relative="AppData/Local/Microsoft/Windows/WebCache/WebCacheV01.dat",
+    ),
 )
 
 _USER_GLOBS: tuple[ArtifactSpec, ...] = (
-    ArtifactSpec("Recent LNKs",        "lnk",      user_relative="AppData/Roaming/Microsoft/Windows/Recent", glob=True),
-    ArtifactSpec("JumpLists",          "jumplist", user_relative="AppData/Roaming/Microsoft/Windows/Recent/AutomaticDestinations", glob=True),
+    ArtifactSpec(
+        "Recent LNKs", "lnk",
+        user_relative="AppData/Roaming/Microsoft/Windows/Recent", glob=True,
+    ),
+    ArtifactSpec(
+        "JumpLists", "jumplist",
+        user_relative="AppData/Roaming/Microsoft/Windows/Recent/AutomaticDestinations",
+        glob=True,
+    ),
     # Firefox profile dirs are randomly named (``<rand>.default-release``), so
-    # glob the Profiles root and copy every regular file under each profile —
-    # places.sqlite, downloads, bookmarks all ride along.
-    ArtifactSpec("Firefox profiles",   "browser",  user_relative="AppData/Roaming/Mozilla/Firefox/Profiles", glob=True, filename="places.sqlite"),
-    # Legacy IE (Vista–IE9): History.IE5 + daily MSHist sub-indexes, all named
+    # glob the Profiles root for every places.sqlite (plus its WAL sidecar).
+    ArtifactSpec(
+        "Firefox profiles", "browser",
+        user_relative="AppData/Roaming/Mozilla/Firefox/Profiles", glob=True,
+        filename="places.sqlite", sidecar_suffixes=_SQLITE_SIDECARS,
+    ),
+    # ESE transaction logs for WebCacheV01.dat (V01.log, V01.chk, V01*.jrs):
+    # small, and needed to replay a dirty-shutdown database.
+    ArtifactSpec(
+        "IE/Edge WebCache logs", "browser",
+        user_relative="AppData/Local/Microsoft/Windows/WebCache", glob=True,
+        name_prefix="v01",
+    ),
+    # Legacy IE (Vista-IE9): History.IE5 + daily MSHist sub-indexes, all named
     # index.dat. Glob the History tree and grab every index.dat.
-    ArtifactSpec("IE history (index.dat)", "browser", user_relative="AppData/Local/Microsoft/Windows/History", glob=True, filename="index.dat"),
+    ArtifactSpec(
+        "IE history (index.dat)", "browser",
+        user_relative="AppData/Local/Microsoft/Windows/History", glob=True,
+        filename="index.dat",
+    ),
 )
 
 # Recycle Bin lives at the volume root (one $Recycle.Bin\<SID>\ per user), not
 # under a home dir — so it's a system glob. Grab only the small $I metadata
 # records ($R recoverable content is left for a targeted recovery).
 _RECYCLE_GLOBS: tuple[ArtifactSpec, ...] = (
-    ArtifactSpec("Recycle Bin ($I)", "recycle_bin", system_path="/$Recycle.Bin", glob=True, name_prefix="$i"),
+    ArtifactSpec(
+        "Recycle Bin ($I)", "recycle_bin", system_path="/$Recycle.Bin", glob=True, name_prefix="$i",
+    ),
 )
 
 
@@ -307,8 +357,15 @@ def _process_one(
         counters.files += 1
         counters.total_bytes += size
         progress.update(collection_id, completed_delta=1, category=spec.category)
+    except _NotARegularFile:
+        audit.skipped(
+            "copy", str(src_path), "not a regular file", category=spec.category, label=spec.label,
+        )
+        progress.update(collection_id, completed_delta=1)
     except FileNotFoundError:
-        audit.skipped("copy", str(src_path), "not present", category=spec.category, label=spec.label)
+        audit.skipped(
+            "copy", str(src_path), "not present", category=spec.category, label=spec.label,
+        )
         progress.update(collection_id, completed_delta=1)
     except Exception as exc:
         logger.exception("collection failed for %s", src_path)
@@ -345,7 +402,7 @@ def _resolve_windows_root(target: Any) -> _FsRoot | None:
         p = target.fs.path(probe)
         if p.exists() and p.is_dir():
             return _FsRoot(target.fs, "target.fs")
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     for i, fs in enumerate(getattr(target, "filesystems", []) or []):
@@ -353,7 +410,7 @@ def _resolve_windows_root(target: Any) -> _FsRoot | None:
             p = fs.path(probe)
             if p.exists() and p.is_dir():
                 return _FsRoot(fs, f"filesystems[{i}] {getattr(fs, '__type__', type(fs).__name__)}")
-        except Exception:  # noqa: BLE001
+        except Exception:
             continue
     return None
 
@@ -372,7 +429,7 @@ def _describe_mounts(target: Any) -> str:
             for mp, fs in mounts.items():
                 fs_type = getattr(fs, "__type__", type(fs).__name__)
                 pieces.append(f"{mp!s} ({fs_type})")
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     if not pieces:
         try:
@@ -381,10 +438,10 @@ def _describe_mounts(target: Any) -> str:
                 try:
                     root_entries = sorted(e.name for e in fs.path("/").iterdir())[:8]
                     sample = ", ".join(root_entries) or "(empty root)"
-                except Exception:  # noqa: BLE001
+                except Exception:
                     sample = "(unreadable root)"
                 pieces.append(f"filesystems[{i}] type={fs_type} root=[{sample}]")
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     return "; ".join(pieces)
 
@@ -421,20 +478,38 @@ def _enumerate_user_and_glob_specs(
 
         for spec in _USER_ARTIFACTS:
             assert spec.user_relative is not None
-            src = root.path(f"{home}/{spec.user_relative}")
+            src_rel = f"{home}/{spec.user_relative}"
             dest_rel = f"{user_dest_root}/{spec.user_relative}"
-            yield spec, src, dest_rel
+            yield spec, root.path(src_rel), dest_rel
+            yield from _present_sidecars(spec, root, src_rel, dest_rel)
 
         for spec in _USER_GLOBS:
             assert spec.user_relative is not None
             glob_root = root.path(f"{home}/{spec.user_relative}")
-            for entry in _iter_files(glob_root, filename=spec.filename):
+            for entry in _iter_files(
+                glob_root, filename=spec.filename, name_prefix=spec.name_prefix,
+            ):
                 rel = _relativize(entry, glob_root)
                 dest_rel = f"{user_dest_root}/{spec.user_relative}/{rel}"
                 yield spec, entry, dest_rel
+                yield from _present_sidecars(
+                    spec, root, f"{home}/{spec.user_relative}/{rel}", dest_rel,
+                )
 
 
-def _iter_users(target: Any, *, root: "_FsRoot | None" = None) -> Iterator[dict[str, Any]]:
+def _present_sidecars(
+    spec: ArtifactSpec, root: _FsRoot, src_rel: str, dest_rel: str,
+) -> Iterator[tuple[ArtifactSpec, Any, str]]:
+    for suffix in spec.sidecar_suffixes:
+        try:
+            candidate = root.path(src_rel + suffix)
+            if candidate.exists() and candidate.is_file():
+                yield spec, candidate, dest_rel + suffix
+        except Exception:
+            continue
+
+
+def _iter_users(target: Any, *, root: _FsRoot | None = None) -> Iterator[dict[str, Any]]:
     """Yield ``{name, home}`` per user.
 
     Prefers ``target.user_details.all()`` (rich plugin output); falls back
@@ -443,12 +518,13 @@ def _iter_users(target: Any, *, root: "_FsRoot | None" = None) -> Iterator[dict[
     """
     try:
         for ud in target.user_details.all():
-            home_value = getattr(ud, "home_path", None) or getattr(getattr(ud, "user", None), "home", None)
-            name = getattr(getattr(ud, "user", None), "name", None) or getattr(ud, "name", None)
+            user_obj = getattr(ud, "user", None)
+            home_value = getattr(ud, "home_path", None) or getattr(user_obj, "home", None)
+            name = getattr(user_obj, "name", None) or getattr(ud, "name", None)
             if name:
                 yield {"name": str(name), "home": _normalize_home(home_value)}
         return
-    except (AttributeError, Exception):  # noqa: BLE001 — fall through deliberately
+    except Exception:
         pass
 
     fs = root if root is not None else _FsRoot(getattr(target, "fs", None), "target.fs")
@@ -456,9 +532,9 @@ def _iter_users(target: Any, *, root: "_FsRoot | None" = None) -> Iterator[dict[
         users_dir = fs.path("/Users")
         if users_dir.exists() and users_dir.is_dir():
             for entry in users_dir.iterdir():
-                if entry.is_dir() and entry.name.lower() not in {"public", "default", "default user", "all users"}:
+                if entry.is_dir() and entry.name.lower() not in _NON_USER_PROFILE_DIRS:
                     yield {"name": entry.name, "home": f"/Users/{entry.name}"}
-    except Exception:  # noqa: BLE001
+    except Exception:
         return
 
 
@@ -482,7 +558,12 @@ def _normalize_home(home_value: Any) -> str | None:
     return h
 
 
-def _iter_files(root: Any, *, filename: str | None = None, name_prefix: str | None = None) -> Iterator[Any]:
+_NON_USER_PROFILE_DIRS = {"public", "default", "default user", "all users"}
+
+
+def _iter_files(
+    root: Any, *, filename: str | None = None, name_prefix: str | None = None,
+) -> Iterator[Any]:
     want = filename.lower() if filename else None
     pref = name_prefix.lower() if name_prefix else None
     try:
@@ -498,18 +579,22 @@ def _iter_files(root: Any, *, filename: str | None = None, name_prefix: str | No
                 if pref is not None and (not name.startswith(pref) or name == "$i30"):
                     continue
                 yield entry
-            except Exception:  # noqa: BLE001
+            except Exception:
                 continue
-    except Exception:  # noqa: BLE001
+    except Exception:
         return
 
 
 def _relativize(entry: Any, root: Any) -> str:
     try:
         return str(entry.relative_to(root)).replace("\\", "/")
-    except Exception:  # noqa: BLE001
+    except Exception:
         # Path APIs across dissect versions vary; fall back to the basename.
         return str(getattr(entry, "name", "file"))
+
+
+class _NotARegularFile(OSError):
+    """The artifact path exists but is a directory, reparse point, or device."""
 
 
 def _stream_copy(_target: Any, src_path: Any, dest_path: Path) -> tuple[str, int]:
@@ -517,7 +602,7 @@ def _stream_copy(_target: Any, src_path: Any, dest_path: Path) -> tuple[str, int
     if not src_path.exists():
         raise FileNotFoundError(str(src_path))
     if not src_path.is_file():
-        raise FileNotFoundError(f"not a file: {src_path}")
+        raise _NotARegularFile(f"not a regular file: {src_path}")
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     h = hashlib.sha256()

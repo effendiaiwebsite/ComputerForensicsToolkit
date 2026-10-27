@@ -5,20 +5,23 @@ Run with: ``python -m core``
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import socket
 import sys
 import uuid
-from datetime import datetime, timezone
-from typing import Any
-
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from core import SCHEMA_VERSION, __version__
 from core.events import Event
 from core.ipc import Dispatcher, serve_stdio
-from core.rules import Rule, evaluate_rules as _eval_rules, load_rules_from_dir
+from core.rules import Finding, load_rules_from_dir_with_errors
+from core.rules import evaluate_rules as _eval_rules
 from core.store import EventStore
+from core.timeutil import iso_to_ms
 
 log = logging.getLogger(__name__)
 
@@ -33,7 +36,7 @@ def _ping(_request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _new_collection_id() -> str:
@@ -101,6 +104,8 @@ def _make_run_triage_hive(store: EventStore):
         host_id_hint = request.get("host_id_hint") or socket.gethostname()
 
         new_collection = collection_id is None
+        if not new_collection and store.get_collection(collection_id) is None:
+            return {"ok": False, "error": f"unknown collection_id: {collection_id!r}"}
         collection_id = collection_id or _new_collection_id()
 
         # Same op handles registry hives, .evtx, .pf, .lnk, JumpLists, browser History.
@@ -271,6 +276,8 @@ def _make_run_triage_hive(store: EventStore):
                 created_at=_utc_now_iso(),
                 note=note,
             )
+        elif host_id != host_id_hint:
+            store.set_collection_host(collection_id, host_id)
         inserted = store.insert_events(events)
         by_type: dict[str, int] = {}
         for e in events:
@@ -323,10 +330,10 @@ def _make_run_triage_directory(store: EventStore):
         from parsers.firefox import parse_firefox_history
         from parsers.ie_index_dat import parse_ie_index_dat
         from parsers.ie_webcache import parse_ie_webcache
-        from parsers.recycle_bin import parse_recycle_bin
         from parsers.jumplist import parse_jumplist
         from parsers.lnk import parse_lnk
         from parsers.prefetch import parse_prefetch
+        from parsers.recycle_bin import parse_recycle_bin
         from parsers.registry import parse_hive
 
         hives = discover_hives(dir_path)
@@ -358,7 +365,10 @@ def _make_run_triage_directory(store: EventStore):
         # collection_id so all events land under one ID instead of a fresh
         # one — keeps the UI's progress poller pointing at the right record.
         provided_cid = request.get("collection_id")
-        collection_id = provided_cid if isinstance(provided_cid, str) and provided_cid else _new_collection_id()
+        if isinstance(provided_cid, str) and provided_cid:
+            collection_id = provided_cid
+        else:
+            collection_id = _new_collection_id()
         if not provided_cid:
             store.register_collection(
                 collection_id=collection_id,
@@ -663,6 +673,11 @@ def _make_run_triage_directory(store: EventStore):
                     "error": f"{type(exc).__name__}: {exc}",
                 })
 
+        if host_id != host_id_hint:
+            # The SYSTEM hive names the examined host; the row was registered
+            # with the examiner-machine placeholder before parsing.
+            store.set_collection_host(collection_id, host_id)
+
         return {
             "collection_id": collection_id,
             "host_id": host_id,
@@ -717,7 +732,7 @@ def _make_query_timeline(store: EventStore):
 
         points: list[dict[str, Any]] = []
         for row in rows:
-            ts_ms = _iso_to_ms(row["timestamp"])
+            ts_ms = iso_to_ms(row["timestamp"])
             if ts_ms is None:
                 continue
             points.append({
@@ -742,40 +757,6 @@ def _make_query_timeline(store: EventStore):
         }
 
     return handler
-
-
-def _iso_to_ms(s: str | None) -> int | None:
-    """Best-effort ISO 8601 → epoch milliseconds."""
-    if not s:
-        return None
-    txt = s.strip()
-    if txt.endswith("Z"):
-        txt = txt[:-1] + "+00:00"
-    # SQLite-ish microsecond truncation: drop nanoseconds past 6 digits.
-    try:
-        dt = datetime.fromisoformat(txt)
-    except ValueError:
-        # Try shaving off everything after the decimal seconds.
-        if "." in txt:
-            head, sep, tail = txt.partition(".")
-            # Find tz suffix in tail
-            tz_idx = -1
-            for i, ch in enumerate(tail):
-                if ch in "+-Z":
-                    tz_idx = i
-                    break
-            tz = tail[tz_idx:] if tz_idx >= 0 else ""
-            frac = tail[:tz_idx] if tz_idx >= 0 else tail
-            frac = frac[:6]
-            try:
-                dt = datetime.fromisoformat(f"{head}.{frac}{tz}")
-            except ValueError:
-                return None
-        else:
-            return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return int(dt.timestamp() * 1000)
 
 
 def _make_query_usb_devices(store: EventStore):
@@ -865,11 +846,12 @@ def _make_query_events(store: EventStore):
             limit=int(request.get("limit", 500)),
             offset=int(request.get("offset", 0)),
         )
+        cid = request.get("collection_id")
         return {
             "events": events,
-            "total": store.count_events(collection_id=request.get("collection_id")),
-            "by_event_type": store.counts_by_event_type(collection_id=request.get("collection_id")),
-            "by_source_artifact": store.counts_by_source_artifact(collection_id=request.get("collection_id")),
+            "total": store.count_events(collection_id=cid),
+            "by_event_type": store.counts_by_event_type(collection_id=cid),
+            "by_source_artifact": store.counts_by_source_artifact(collection_id=cid),
         }
 
     return handler
@@ -901,6 +883,24 @@ def _default_rules_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "rules"
 
 
+def _finding_key(f: Finding | dict[str, Any]) -> tuple[str, tuple[str, ...]]:
+    """Identity of a finding across re-evaluations (finding_ids are regenerated)."""
+    if isinstance(f, Finding):
+        return f.rule_id, tuple(sorted(f.evidence_event_ids))
+    return str(f["rule_id"]), tuple(sorted(f.get("evidence_event_ids") or ()))
+
+
+def _reviewed_statuses(
+    store: EventStore, collection_id: str,
+) -> dict[tuple[str, tuple[str, ...]], str]:
+    """examiner_status by finding key for every finding the examiner has already triaged."""
+    return {
+        _finding_key(row): row["examiner_status"]
+        for row in store.query_findings(collection_id=collection_id, limit=10_000_000)
+        if row.get("examiner_status") and row["examiner_status"] != "new"
+    }
+
+
 def _make_evaluate_rules(store: EventStore, rules_dir: Path):
     def handler(request: dict[str, Any]) -> dict[str, Any]:
         collection_id = request.get("collection_id")
@@ -908,13 +908,21 @@ def _make_evaluate_rules(store: EventStore, rules_dir: Path):
             return {"ok": False, "error": "missing 'collection_id' string"}
 
         try:
-            rules: list[Rule] = load_rules_from_dir(rules_dir)
+            rules, failed = load_rules_from_dir_with_errors(rules_dir)
+        except FileNotFoundError as exc:
+            return {"ok": False, "error": str(exc)}
         except Exception as exc:
             return {"ok": False, "error": f"rule load failed: {exc}"}
 
         events_iter = store.query_events(collection_id=collection_id, limit=10_000_000)
+        previous_status = _reviewed_statuses(store, collection_id)
         store.clear_findings(collection_id=collection_id)
         findings = _eval_rules(rules, events_iter, collection_id=collection_id)
+        if previous_status:
+            findings = [
+                replace(f, examiner_status=previous_status.get(_finding_key(f), f.examiner_status))
+                for f in findings
+            ]
         inserted = store.insert_findings(findings)
 
         by_severity: dict[str, int] = {}
@@ -925,6 +933,11 @@ def _make_evaluate_rules(store: EventStore, rules_dir: Path):
         return {
             "collection_id": collection_id,
             "rules_loaded": len(rules),
+            "rules_failed": {
+                "count": len(failed),
+                "names": [Path(path).name for path in failed],
+                "errors": failed,
+            },
             "findings_count": inserted,
             "by_severity": by_severity,
             "by_rule": by_rule,
@@ -972,6 +985,17 @@ def _make_enumerate_drives():
     return handler
 
 
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_cell(value: Any) -> Any:
+    """Neutralize spreadsheet formula injection: a leading ``=``/``+``/``-``/``@``
+    makes Excel evaluate the cell, so such strings get a quote prefix."""
+    if isinstance(value, str) and value.startswith(_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
 def _make_export_events(store: EventStore):
     def handler(request: dict[str, Any]) -> dict[str, Any]:
         import csv
@@ -1008,7 +1032,7 @@ def _make_export_events(store: EventStore):
                 w = csv.writer(fh)
                 w.writerow(cols)
                 for r in rows:
-                    w.writerow([
+                    w.writerow([_csv_cell(v) for v in (
                         r.get("event_id"),
                         r.get("timestamp"),
                         r.get("timestamp_source"),
@@ -1020,7 +1044,7 @@ def _make_export_events(store: EventStore):
                         r.get("summary"),
                         _json.dumps(r.get("evidence", {}), separators=(",", ":"), default=str),
                         r.get("parser_version"),
-                    ])
+                    )])
         else:  # ndjson
             with out.open("w", encoding="utf-8") as fh:
                 for r in rows:
@@ -1071,6 +1095,8 @@ def _make_export_folder(store: EventStore, browser, progress):
     import threading
     from pathlib import Path as _Path
 
+    from core.image_browser import export_dest_error
+
     def handler(request: dict[str, Any]) -> dict[str, Any]:
         cid = request.get("collection_id")
         src_path = request.get("src_path") or "/"
@@ -1088,6 +1114,9 @@ def _make_export_folder(store: EventStore, browser, progress):
                 "ok": False,
                 "error": "collection has no source_path; re-ingest to populate it",
             }
+        dest_error = export_dest_error(dest_dir, source_path)
+        if dest_error:
+            return {"ok": False, "error": dest_error}
 
         # Separate progress key per export so it doesn't collide with the
         # parent collection's own progress snapshot.
@@ -1105,7 +1134,7 @@ def _make_export_folder(store: EventStore, browser, progress):
             dest_root = _Path(dest_dir).resolve()
             audit = AuditLog(dest_root / "audit.jsonl")
             try:
-                export_folder(
+                result = export_folder(
                     browser,
                     collection_id=cid,
                     src_path=src_path,
@@ -1115,7 +1144,16 @@ def _make_export_folder(store: EventStore, browser, progress):
                     progress=progress,
                     progress_key=progress_key,
                 )
-                progress.finish(progress_key)
+                if result.walk_error:
+                    progress.finish(
+                        progress_key,
+                        error=(
+                            f"source walk aborted ({result.walk_error}); "
+                            f"{result.files_copied} files exported before the failure"
+                        ),
+                    )
+                else:
+                    progress.finish(progress_key)
             except Exception as exc:
                 logger = logging.getLogger(__name__)
                 logger.exception("folder export failed")
@@ -1241,13 +1279,33 @@ def _make_run_live_collection(store: EventStore, progress, rules_dir: Path):
                     "host_id_hint": socket.gethostname(),
                     "collection_id": collection_id,
                 })
-                if tri.get("ok") is not False:
-                    eval_handler = _make_evaluate_rules(store, rules_dir)
-                    eval_handler({"collection_id": collection_id})
-                    progress.update(
+                if tri.get("ok") is False:
+                    error = f"ingestion failed: {tri.get('error', 'unknown error')}"
+                    audit.write({
+                        "timestamp": _utc_now_iso(), "action": "ingest",
+                        "source_path": str(dest_root), "status": "error", "error": error,
+                    })
+                    progress.finish(collection_id, error=error)
+                    return
+                failed = [a for a in tri.get("artifacts", []) if a.get("error")]
+                for a in failed:
+                    audit.write({
+                        "timestamp": _utc_now_iso(), "action": "parse",
+                        "source_path": a.get("path", ""), "status": "error",
+                        "error": a["error"],
+                    })
+                eval_handler = _make_evaluate_rules(store, rules_dir)
+                eval_result = eval_handler({"collection_id": collection_id})
+                if eval_result.get("ok") is False:
+                    progress.finish(
                         collection_id,
-                        current_item=f"done — ingested {tri.get('event_count', 0)} events",
+                        error=f"rule evaluation failed: {eval_result.get('error')}",
                     )
+                    return
+                done = f"done — ingested {tri.get('event_count', 0)} events"
+                if failed:
+                    done += f", {len(failed)} artifact(s) failed to parse"
+                progress.update(collection_id, current_item=done, errors_delta=len(failed))
                 progress.finish(collection_id)
             except NoWindowsVolumeError as exc:
                 audit.error("collect_live", drive, exc)
@@ -1330,10 +1388,8 @@ def main() -> None:
     # — Windows defaults sys.stdin/out to cp1252, which silently mojibakes
     # JSON payloads from the Rust side that are already UTF-8 bytes.
     for stream in (sys.stdin, sys.stdout, sys.stderr):
-        try:
+        with contextlib.suppress(AttributeError, OSError):
             stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
-        except (AttributeError, OSError):
-            pass
     serve_stdio(build_dispatcher())
 
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 TimestampSource = Literal["direct", "inferred", "none"]
@@ -44,7 +44,7 @@ def utc_iso(dt: datetime) -> str:
     """Format a datetime as a Z-suffixed ISO 8601 string in UTC."""
     if dt.tzinfo is None:
         return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def make_event(
@@ -68,11 +68,7 @@ def make_event(
     If ``timestamp_source`` is not given, infer it from the presence of
     ``timestamp`` — ``"direct"`` when given, ``"none"`` when ``None``.
     """
-    ts_str: str | None
-    if isinstance(timestamp, datetime):
-        ts_str = utc_iso(timestamp)
-    else:
-        ts_str = timestamp
+    ts_str = utc_iso(timestamp) if isinstance(timestamp, datetime) else timestamp
 
     if timestamp_source is None:
         timestamp_source = "direct" if ts_str is not None else "none"

@@ -10,13 +10,14 @@ last-modified time when possible (most informative for timeline use).
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from LnkParse3.lnk_file import LnkFile
 
 from core.events import Event, make_event
+from parsers._time import to_iso_utc
 
 PARSER_VERSION = "lnk/0.1.0"
 SOURCE_ARTIFACT = "lnk"
@@ -47,12 +48,7 @@ def parse_lnk(
     location_info = link_info.get("location_info") or {}
     string_data = data.get("data") or {}
 
-    target_path = (
-        link_info.get("local_base_path")
-        or link_info.get("local_base_path_unicode")
-        or string_data.get("relative_path")
-        or "<unknown>"
-    )
+    target_path = target_path_from_lnk(link_info, string_data)
 
     creation_time = _iso(header.get("creation_time"))
     modified_time = _iso(header.get("modified_time"))
@@ -80,6 +76,8 @@ def parse_lnk(
                 "drive_type": location_info.get("drive_type"),
                 "drive_serial": location_info.get("drive_serial_number"),
                 "volume_label": location_info.get("volume_label"),
+                "network_share": location_info.get("net_name")
+                or location_info.get("net_name_unicode"),
             },
             collection_id=collection_id,
             parser_version=PARSER_VERSION,
@@ -89,16 +87,33 @@ def parse_lnk(
     ]
 
 
+def target_path_from_lnk(link_info: dict[str, Any], string_data: dict[str, Any]) -> str:
+    """Reconstruct the target per MS-SHLLINK 2.3: ``LocalBasePath`` +
+    ``CommonPathSuffix`` for local targets, ``NetName`` (the UNC share) +
+    ``CommonPathSuffix`` for network targets, else the relative path."""
+    location_info = link_info.get("location_info") or {}
+    suffix = (
+        link_info.get("common_path_suffix_unicode")
+        or link_info.get("common_path_suffix")
+        or ""
+    )
+    base = link_info.get("local_base_path_unicode") or link_info.get("local_base_path")
+    if base:
+        return _join_win(base, suffix)
+    share = location_info.get("net_name_unicode") or location_info.get("net_name")
+    if share:
+        return _join_win(share, suffix)
+    return string_data.get("relative_path") or "<unknown>"
+
+
+def _join_win(base: str, suffix: str) -> str:
+    if not suffix:
+        return base
+    return base.rstrip("\\") + "\\" + suffix.lstrip("\\")
+
+
 def _iso(v: Any) -> str | None:
-    if v is None:
-        return None
-    if isinstance(v, datetime):
-        if v.tzinfo is None:
-            return v.strftime("%Y-%m-%dT%H:%M:%SZ")
-        return v.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    if isinstance(v, str):
-        return v
-    return None
+    return to_iso_utc(v)
 
 
 def _jsonable(obj: Any) -> Any:

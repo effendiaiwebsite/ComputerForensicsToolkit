@@ -5,8 +5,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
+PersistenceRow = tuple[str, str, dict[str, Any], list[dict[str, Any]]]
 
-def flatten_persistence_values(payload: dict[str, dict[str, Any]]) -> Iterable[tuple[str, str, dict[str, Any], list[dict[str, Any]]]]:
+
+def flatten_persistence_values(payload: dict[str, dict[str, Any]]) -> Iterable[PersistenceRow]:
     """Yield ``(key_path, last_write, value_dict, raw_values)`` for the standard
     "Run-key-style" output shape used by regipy's persistence plugins.
 

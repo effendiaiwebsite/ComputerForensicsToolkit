@@ -26,7 +26,7 @@ class CollectedWebCache:
 def collect_webcache(
     path: str | Path,
     *,
-    host_id: str | None = None,  # noqa: ARG001 — kept for symmetry with siblings
+    host_id: str | None = None,
 ) -> CollectedWebCache:
     src = Path(path).resolve()
     if not src.exists():

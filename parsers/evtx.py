@@ -21,6 +21,7 @@ from typing import Any
 from Evtx.Evtx import Evtx
 
 from core.events import Event, make_event
+from parsers._time import to_iso_utc
 
 PARSER_VERSION = "evtx/0.1.0"
 HOST_OS = "windows"
@@ -133,13 +134,24 @@ def _to_event(
         return None
 
     host_id = record.get("computer") or host_id_hint
-    user = _user_from_data(record.get("data") or {})
+    data = record.get("data") or {}
+    user = _user_from_data(data, event_id_int)
 
     handler = _HANDLERS.get((channel, event_id_int))
     if handler is None:
         event_type, summary = _generic_fallback(channel, event_id_int, record)
     else:
         event_type, summary = handler(record)
+
+    # EventData goes in first so a record cannot shadow the fixed keys
+    # (a provider is free to name a Data element "channel" or "event_id").
+    evidence: dict[str, Any] = {
+        **data,
+        "channel": channel,
+        "event_id": event_id_int,
+        "provider": record.get("provider"),
+        "record_id": record.get("record_id"),
+    }
 
     return make_event(
         host_os=HOST_OS,
@@ -149,27 +161,44 @@ def _to_event(
         source_path=hive_path,
         event_type=event_type,
         summary=summary,
-        evidence={
-            "channel": channel,
-            "event_id": event_id_int,
-            "provider": record.get("provider"),
-            "record_id": record.get("record_id"),
-            **(record.get("data") or {}),
-        },
+        evidence=evidence,
         collection_id=collection_id,
         parser_version=PARSER_VERSION,
-        timestamp=record.get("time_created"),
+        # python-evtx renders SystemTime as ``filetime().isoformat(" ")``:
+        # space-separated, no zone suffix. Sub-second precision is kept because
+        # event-log ordering within one second is routinely significant.
+        timestamp=to_iso_utc(record.get("time_created"), microseconds=True),
         raw=record,
     )
 
 
-def _user_from_data(data: dict[str, Any]) -> str | None:
+_NON_USERS = {"-", "ANONYMOUS LOGON", "SYSTEM"}
+
+# Group-membership audits (4728/4732/4756 add, 4729/4733/4757 remove): here
+# TargetUserName is the *group*; the account of interest is the member.
+_GROUP_MEMBERSHIP_IDS = {4728, 4729, 4732, 4733, 4756, 4757}
+
+
+def _user_from_data(data: dict[str, Any], event_id: int | None = None) -> str | None:
     """Best-effort user attribution from the well-known EventData fields."""
-    for key in ("TargetUserName", "SubjectUserName", "AccountName", "UserName", "User"):
+    keys: tuple[str, ...]
+    if event_id in _GROUP_MEMBERSHIP_IDS:
+        keys = ("MemberName", "SubjectUserName")
+    else:
+        keys = ("TargetUserName", "SubjectUserName", "AccountName", "UserName", "User")
+    for key in keys:
         v = data.get(key)
-        if v and v not in {"-", "ANONYMOUS LOGON", "SYSTEM"}:
-            return str(v)
+        if v and v not in _NON_USERS:
+            return _account_from_member_name(str(v)) if key == "MemberName" else str(v)
     return None
+
+
+def _account_from_member_name(member: str) -> str:
+    """``MemberName`` is a distinguished name on domain controllers
+    (``CN=bob,CN=Users,DC=corp,DC=local``); reduce it to the leaf CN."""
+    if member.upper().startswith("CN="):
+        return member.split(",", 1)[0][3:]
+    return member
 
 
 def _source_artifact(channel: str) -> str:

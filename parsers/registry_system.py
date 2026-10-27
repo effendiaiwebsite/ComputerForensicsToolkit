@@ -21,6 +21,7 @@ from regipy.plugins.system.timezone_data import TimezoneDataPlugin
 from regipy.registry import RegistryHive
 
 from core.events import Event, make_event
+from parsers._time import to_iso_utc
 
 PARSER_VERSION = "system_hive/0.1.0"
 SOURCE_ARTIFACT = "registry.system"
@@ -34,6 +35,7 @@ def parse_system_hive(
     *,
     collection_id: str,
     host_id_hint: str | None = None,
+    hive: RegistryHive | None = None,
 ) -> list[Event]:
     """Run every SYSTEM-hive plugin we support and return the union of events.
 
@@ -41,7 +43,7 @@ def parse_system_hive(
     hive, after which all events are stamped with it (including in retrospect).
     """
     hive_path_str = str(Path(hive_path).resolve())
-    hive = RegistryHive(hive_path_str)
+    hive = hive or RegistryHive(hive_path_str)
 
     events: list[Event] = []
     host_id = host_id_hint or "UNKNOWN"
@@ -92,7 +94,7 @@ def _run_computer_name(
                 evidence={"computer_name": name},
                 collection_id=collection_id,
                 parser_version=PARSER_VERSION,
-                timestamp=entry.get("timestamp"),
+                timestamp=to_iso_utc(entry.get("timestamp")),
                 raw=entry,
             )
         )
@@ -117,7 +119,10 @@ def _run_timezone(
                 source_artifact=SOURCE_ARTIFACT,
                 source_path=hive_path,
                 event_type="system_config_change",
-                summary=f"TimeZone = {flat.get('TimeZoneKeyName') or flat.get('StandardName') or '<unknown>'}",
+                summary=(
+                    "TimeZone = "
+                    f"{flat.get('TimeZoneKeyName') or flat.get('StandardName') or '<unknown>'}"
+                ),
                 evidence={
                     "control_set": control_set_path,
                     "time_zone_key_name": flat.get("TimeZoneKeyName"),
@@ -171,10 +176,7 @@ def _walk_usbstor(hive: RegistryHive) -> list[dict]:
         except (RegistryKeyNotFoundException, NoRegistrySubkeysException):
             continue
         for device in devices:
-            parts = device.name.split("&")
-            manufacturer, title, version = (
-                (parts[1], parts[2], parts[3]) if len(parts) == 4 else (None, None, None)
-            )
+            manufacturer, title, version = _split_device_name(device.name)
             try:
                 serials = list(device.iter_subkeys())
             except NoRegistrySubkeysException:
@@ -193,12 +195,30 @@ def _walk_usbstor(hive: RegistryHive) -> list[dict]:
     return entries
 
 
+_USB_ID_PREFIXES = (("ven_", 0), ("prod_", 1), ("rev_", 2))
+
+
+def _split_device_name(name: str) -> tuple[str | None, str | None, str | None]:
+    """``Disk&Ven_SanDisk&Prod_Cruzer&Rev_1.00`` → ``("SanDisk", "Cruzer", "1.00")``."""
+    parts = name.split("&")
+    if len(parts) != 4:
+        return None, None, None
+    out: list[str | None] = [None, None, None]
+    for part in parts[1:]:
+        lowered = part.lower()
+        for prefix, slot in _USB_ID_PREFIXES:
+            if lowered.startswith(prefix):
+                out[slot] = part[len(prefix):] or None
+                break
+    return out[0], out[1], out[2]
+
+
 def _usbstor_serial_entry(
     hive, cs_path, device_name, serial, manufacturer, title, version, convert_wintime,
 ) -> dict:
     serial_number = serial.name
     key_path = rf"{cs_path}\{device_name}\{serial_number}"
-    last_write = convert_wintime(serial.header.last_modified, as_json=True)
+    last_write = to_iso_utc(convert_wintime(serial.header.last_modified, as_json=False))
 
     disk_guid = None
     try:
@@ -227,7 +247,7 @@ def _usbstor_serial_entry(
                 k = dates_key.get_subkey(sub, raise_on_missing=False)
                 if k:
                     try:
-                        dates[field] = k.get_value(as_json=True)
+                        dates[field] = to_iso_utc(k.get_value(as_json=True))
                     except Exception:
                         dates[field] = None
 
@@ -309,7 +329,11 @@ def _run_services(
     events: list[Event] = []
     for control_set_path, payload in (plugin.entries or {}).items():
         for svc in payload.get("services", []) or []:
-            values = {v.get("name"): v.get("value") for v in (svc.get("values") or []) if isinstance(v, dict)}
+            values = {
+                v.get("name"): v.get("value")
+                for v in (svc.get("values") or [])
+                if isinstance(v, dict)
+            }
             display_name = values.get("DisplayName") or svc.get("name")
             image_path = values.get("ImagePath")
             start = values.get("Start")
@@ -321,7 +345,10 @@ def _run_services(
                     source_artifact=SOURCE_ARTIFACT,
                     source_path=hive_path,
                     event_type="service_install",
-                    summary=f"Service: {display_name} ({svc.get('name')}) → {image_path or '<no image>'}",
+                    summary=(
+                        f"Service: {display_name} ({svc.get('name')}) → "
+                        f"{image_path or '<no image>'}"
+                    ),
                     evidence={
                         "service_name": svc.get("name"),
                         "display_name": display_name,
@@ -332,7 +359,7 @@ def _run_services(
                     },
                     collection_id=collection_id,
                     parser_version=PARSER_VERSION,
-                    timestamp=svc.get("last_modified"),
+                    timestamp=to_iso_utc(svc.get("last_modified")),
                     raw=svc,
                 )
             )
@@ -349,7 +376,16 @@ def _run_shimcache(
     plugin.run()
     events: list[Event] = []
     for entry in plugin.entries or []:
+        if not isinstance(entry, dict):
+            continue
         program_path = entry.get("path") or entry.get("Path") or "<unknown>"
+        # regipy's ShimCacheParser names the field last_mod_date (last_mod_time
+        # on XP-era caches); last_modified is accepted for older forks.
+        last_modified = to_iso_utc(
+            entry.get("last_mod_date")
+            or entry.get("last_modified")
+            or entry.get("last_mod_time")
+        )
         events.append(
             make_event(
                 host_os=HOST_OS,
@@ -360,12 +396,12 @@ def _run_shimcache(
                 summary=f"ShimCache: {program_path}",
                 evidence={
                     "program_path": program_path,
-                    "last_modified": entry.get("last_modified"),
+                    "last_modified": last_modified,
                     "exec_flag": entry.get("exec_flag"),
                 },
                 collection_id=collection_id,
                 parser_version=PARSER_VERSION,
-                timestamp=entry.get("last_modified"),
+                timestamp=last_modified,
                 raw=entry,
             )
         )

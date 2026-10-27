@@ -24,7 +24,7 @@ class CollectedIndexDat:
 def collect_index_dat(
     path: str | Path,
     *,
-    host_id: str | None = None,  # noqa: ARG001 — kept for symmetry with siblings
+    host_id: str | None = None,
 ) -> CollectedIndexDat:
     src = Path(path).resolve()
     if not src.exists():

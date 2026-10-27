@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from core.__main__ import _iso_to_ms, build_dispatcher
+from core.__main__ import build_dispatcher
 from core.events import make_event
 from core.store import EventStore
+from core.timeutil import iso_to_ms as _iso_to_ms
 
 
 def _ev(**overrides):
@@ -28,9 +29,9 @@ def test_iso_to_ms_handles_zulu_and_offset() -> None:
     b = _iso_to_ms("2026-06-11T12:00:00+00:00")
     assert a == b
     # 2026-06-11T12:00:00Z → known epoch
-    assert a == int(
-        __import__("datetime").datetime(2026, 6, 11, 12, 0, 0, tzinfo=__import__("datetime").timezone.utc).timestamp() * 1000
-    )
+    from datetime import UTC, datetime
+
+    assert a == int(datetime(2026, 6, 11, 12, 0, 0, tzinfo=UTC).timestamp() * 1000)
 
 
 def test_iso_to_ms_handles_fractional_seconds() -> None:
@@ -47,9 +48,18 @@ def test_iso_to_ms_returns_none_for_garbage() -> None:
 def test_query_timeline_categories_and_points() -> None:
     store = EventStore()
     store.insert_events([
-        _ev(timestamp="2026-06-11T12:00:00Z", source_artifact="registry.system", event_type="usb_connection", summary="usb"),
-        _ev(timestamp="2026-06-11T13:00:00Z", source_artifact="evtx.security", event_type="logon", summary="login"),
-        _ev(timestamp=None, source_artifact="registry.software", event_type="system_config_change", summary="cfg"),
+        _ev(
+            timestamp="2026-06-11T12:00:00Z", source_artifact="registry.system",
+            event_type="usb_connection", summary="usb",
+        ),
+        _ev(
+            timestamp="2026-06-11T13:00:00Z", source_artifact="evtx.security",
+            event_type="logon", summary="login",
+        ),
+        _ev(
+            timestamp=None, source_artifact="registry.software",
+            event_type="system_config_change", summary="cfg",
+        ),
     ])
 
     d = build_dispatcher(store)

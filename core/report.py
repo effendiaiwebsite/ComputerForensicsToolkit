@@ -7,7 +7,7 @@ it, or print it from a browser without external dependencies.
 Sections, in order:
   1. Case header (case name, examiner, generated-at, host, collection)
   2. Summary stats (event totals, time span, findings by severity)
-  3. MITRE ATT&CK heat-map (tactics × technique counts, color-tiered)
+  3. MITRE ATT&CK heat-map (tactics by technique counts, color-tiered)
   4. Timeline (inline SVG lane chart, one lane per source_artifact)
   5. Findings (rule, severity, technique chips, sample evidence)
   6. Per-source-artifact sections (top events per artifact)
@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import html
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
+
+from core.timeutil import iso_to_ms
 
 if TYPE_CHECKING:
     from core.store import EventStore
@@ -58,13 +60,14 @@ def generate_report(
     meta = _gather_meta(store, collection_id, case_name=case_name, examiner=examiner)
     events_summary = _gather_events_summary(store, collection_id)
     findings = list(store.query_findings(collection_id=collection_id, limit=10_000))
+    findings_total = store.count_findings(collection_id=collection_id)
     findings_by_severity = store.counts_by_severity(collection_id=collection_id)
     timeline_points = store.query_timeline_points(collection_id=collection_id, limit=100_000)
     per_artifact = _gather_per_artifact(store, collection_id, events_summary["by_source_artifact"])
 
     body = "\n".join([
         _render_header(meta),
-        _render_summary(meta, events_summary, findings_by_severity, len(findings)),
+        _render_summary(meta, events_summary, findings_by_severity, findings_total),
         _render_mitre_heatmap(findings),
         _render_timeline(timeline_points, events_summary["by_source_artifact"]),
         _render_per_day(store, collection_id),
@@ -144,7 +147,7 @@ def _gather_per_artifact(
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def esc(s: Any) -> str:
@@ -158,10 +161,14 @@ def _render_header(meta: dict[str, Any]) -> str:
   <div class="case-grid">
     <div><span class="k">Examiner</span><span class="v">{esc(meta['examiner'])}</span></div>
     <div><span class="k">Generated</span><span class="v">{esc(meta['generated_at'])}</span></div>
-    <div><span class="k">Host</span><span class="v">{esc(meta['host_id'])} ({esc(meta['host_os'])})</span></div>
-    <div><span class="k">Collection ID</span><span class="v mono">{esc(meta['collection_id'])}</span></div>
-    <div><span class="k">Collected at</span><span class="v">{esc(meta['collection_created_at'])}</span></div>
-    <div><span class="k">Source</span><span class="v mono small">{esc(meta['collection_note'])}</span></div>
+    <div><span class="k">Host</span><span class="v">{esc(meta['host_id'])} \
+({esc(meta['host_os'])})</span></div>
+    <div><span class="k">Collection ID</span><span class="v mono">\
+{esc(meta['collection_id'])}</span></div>
+    <div><span class="k">Collected at</span><span class="v">\
+{esc(meta['collection_created_at'])}</span></div>
+    <div><span class="k">Source</span><span class="v mono small">\
+{esc(meta['collection_note'])}</span></div>
   </div>
 </section>
 """
@@ -246,7 +253,8 @@ def _render_mitre_heatmap(findings: list[dict[str, Any]]) -> str:
     for tactic in ordered_tactics:
         techniques = by_tactic[tactic]
         cells = "".join(
-            f'<div class="cell {_heat_tier(c)}" title="{esc(tech)} ({c} finding{"" if c == 1 else "s"})">'
+            f'<div class="cell {_heat_tier(c)}" '
+            f'title="{esc(tech)} ({c} finding{"" if c == 1 else "s"})">'
             f'<div class="tech">{esc(tech)}</div><div class="cnt">{c}</div></div>'
             for tech, c in sorted(techniques.items(), key=lambda kv: (-kv[1], kv[0]))
         )
@@ -275,7 +283,7 @@ def _render_timeline(points: list[dict[str, Any]], by_artifact: dict[str, int]) 
     """Multi-lane SVG: one lane per source_artifact (only those with dated events)."""
     ts_points: list[tuple[int, str]] = []
     for p in points:
-        ms = _iso_to_ms(p["timestamp"])
+        ms = iso_to_ms(p["timestamp"])
         if ms is not None:
             ts_points.append((ms, p["source_artifact"]))
     if not ts_points:
@@ -325,6 +333,7 @@ def _render_timeline(points: list[dict[str, Any]], by_artifact: dict[str, int]) 
 
     # X-axis: a few date ticks across the range.
     n_ticks = 6
+    axis_y = len(lanes) * lane_h + 10
     tick_xs = []
     for i in range(n_ticks):
         frac = i / (n_ticks - 1)
@@ -332,12 +341,12 @@ def _render_timeline(points: list[dict[str, Any]], by_artifact: dict[str, int]) 
         x = plot_x0 + int(frac * plot_w)
         lbl = _ms_to_short(int(t))
         tick_xs.append(
-            f'<line x1="{x}" y1="{len(lanes) * lane_h + 10}" x2="{x}" y2="{len(lanes) * lane_h + 16}" class="tick"/>'
-            f'<text x="{x}" y="{len(lanes) * lane_h + 30}" class="tick-label" text-anchor="middle">{lbl}</text>'
+            f'<line x1="{x}" y1="{axis_y}" x2="{x}" y2="{axis_y + 6}" class="tick"/>'
+            f'<text x="{x}" y="{axis_y + 20}" class="tick-label" text-anchor="middle">{lbl}</text>'
         )
     axis = (
-        f'<line x1="{plot_x0}" y1="{len(lanes) * lane_h + 10}" x2="{plot_x0 + plot_w}" '
-        f'y2="{len(lanes) * lane_h + 10}" class="axis"/>'
+        f'<line x1="{plot_x0}" y1="{axis_y}" x2="{plot_x0 + plot_w}" '
+        f'y2="{axis_y}" class="axis"/>'
     )
 
     svg = (
@@ -349,7 +358,8 @@ def _render_timeline(points: list[dict[str, Any]], by_artifact: dict[str, int]) 
     return f"""
 <section class="timeline">
   <h2>Timeline</h2>
-  <div class="muted small">{len(ts_points):,} dated events across {len(lanes)} sources · {_ms_to_short(t_min)} → {_ms_to_short(t_max)}</div>
+  <div class="muted small">{len(ts_points):,} dated events across {len(lanes)} sources · \
+{_ms_to_short(t_min)} → {_ms_to_short(t_max)}</div>
   {svg}
 </section>
 """
@@ -394,7 +404,8 @@ def _render_findings(findings: list[dict[str, Any]]) -> str:
 <section class="findings">
   <h2>Findings <span class="muted">({len(grouped)} rules · {len(findings):,} total hits)</span></h2>
   <table class="findings-table">
-    <thead><tr><th>Severity</th><th>Rule</th><th>MITRE</th><th class="r">Hits</th><th>Example evidence</th></tr></thead>
+    <thead><tr><th>Severity</th><th>Rule</th><th>MITRE</th><th class="r">Hits</th>\
+<th>Example evidence</th></tr></thead>
     <tbody>{''.join(rows)}</tbody>
   </table>
 </section>
@@ -414,7 +425,8 @@ def _render_per_artifact(per_artifact: list[dict[str, Any]]) -> str:
         )
         blocks.append(
             f'<div class="artifact">'
-            f'<h3>{esc(entry["artifact"])} <span class="muted">({entry["count"]:,} events)</span></h3>'
+            f'<h3>{esc(entry["artifact"])} '
+            f'<span class="muted">({entry["count"]:,} events)</span></h3>'
             f'<table class="artifact-table">'
             f'<thead><tr><th>Time</th><th>Event type</th><th>Summary</th></tr></thead>'
             f'<tbody>{sample_rows or "<tr><td colspan=3 class=muted>no events</td></tr>"}</tbody>'
@@ -441,6 +453,7 @@ _HIGH_VALUE_DAY_TYPES = (
 _FILLER_DAY_TYPES = ("browser_visit", "file_access")
 _DAY_SAMPLE_LIMIT = 15
 _PER_TYPE_CAP = 5  # up to this many of each high-value type, so every type is represented
+_DAY_SAMPLE_MAX = max(_DAY_SAMPLE_LIMIT, _PER_TYPE_CAP * len(_HIGH_VALUE_DAY_TYPES))
 
 
 def _day_samples(store: EventStore, collection_id: str, day: str) -> list[dict[str, Any]]:
@@ -481,7 +494,7 @@ def _day_samples(store: EventStore, collection_id: str, day: str) -> list[dict[s
 def _render_per_day(store: EventStore, collection_id: str) -> str:
     """Per-busy-day activity digest — answers "what was the user doing on day X?".
 
-    Reuses the same ``mean + k·σ`` busy-day rule as the Timeline tab so the two
+    Reuses the same ``mean + k * sigma`` busy-day rule as the Timeline tab so the two
     views agree on which days stand out.
     """
     from core.activity import compute_activity
@@ -493,7 +506,8 @@ def _render_per_day(store: EventStore, collection_id: str) -> str:
         return (
             '<section class="per-day"><h2>Daily activity</h2>'
             f'<div class="muted small">No statistically busy days '
-            f'(threshold {analysis["threshold"]:.0f} events/day; busiest day {peak}).</div></section>'
+            f'(threshold {analysis["threshold"]:.0f} events/day; busiest day {peak}).'
+            '</div></section>'
         )
 
     blocks = []
@@ -520,8 +534,12 @@ def _render_per_day(store: EventStore, collection_id: str) -> str:
         )
     return f"""
 <section class="per-day">
-  <h2>Daily activity <span class="muted">({len(busy)} busy day{"" if len(busy) == 1 else "s"} · &gt; {analysis['threshold']:.0f} events/day)</span></h2>
-  <div class="muted small">Days whose event count exceeds mean + 1.5σ ({analysis['mean']:.0f} ± {analysis['stddev']:.0f}). Up to 15 notable events shown per day.</div>
+  <h2>Daily activity <span class="muted">({len(busy)} busy day{"" if len(busy) == 1 else "s"} \
+· &gt; {analysis['threshold']:.0f} events/day)</span></h2>
+  <div class="muted small">Days whose event count exceeds mean + 1.5&sigma; \
+({analysis['mean']:.0f} ± {analysis['stddev']:.0f}). Up to {_DAY_SAMPLE_MAX} notable events \
+shown per day: up to {_PER_TYPE_CAP} of each high-signal type, then browsing/file-access \
+filler.</div>
   {''.join(blocks)}
 </section>
 """
@@ -539,41 +557,12 @@ def _render_footer(meta: dict[str, Any]) -> str:
 # ----- date conversion -------------------------------------------------------
 
 
-def _iso_to_ms(s: str | None) -> int | None:
-    if not s:
-        return None
-    txt = s.strip()
-    if txt.endswith("Z"):
-        txt = txt[:-1] + "+00:00"
-    try:
-        dt = datetime.fromisoformat(txt)
-    except ValueError:
-        if "." in txt:
-            head, _, tail = txt.partition(".")
-            tz_idx = -1
-            for i, ch in enumerate(tail):
-                if ch in "+-Z":
-                    tz_idx = i
-                    break
-            tz = tail[tz_idx:] if tz_idx >= 0 else ""
-            frac = (tail[:tz_idx] if tz_idx >= 0 else tail)[:6]
-            try:
-                dt = datetime.fromisoformat(f"{head}.{frac}{tz}")
-            except ValueError:
-                return None
-        else:
-            return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return int(dt.timestamp() * 1000)
-
-
 def _ms_to_short(ms: int) -> str:
     # epoch + timedelta avoids datetime.fromtimestamp's platform limits
     # (Windows raises OSError on negative / far-out-of-range values that can
     # slip in from a malformed artifact timestamp).
     try:
-        dt = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(milliseconds=ms)
+        dt = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=ms)
         return dt.strftime("%Y-%m-%d %H:%M")
     except (OverflowError, ValueError, OSError):
         return "—"
@@ -640,10 +629,14 @@ _CSS = """
     background: rgba(255,255,255,0.05); color: var(--fg);
     border: 1px solid var(--border); }
   .chip.mitre { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
-  .chip.sev-critical { background: rgba(211,77,77,0.18); color: var(--crit); border-color: rgba(211,77,77,0.4); }
-  .chip.sev-high { background: rgba(240,183,94,0.18); color: var(--high); border-color: rgba(240,183,94,0.4); }
-  .chip.sev-medium { background: rgba(98,185,247,0.16); color: var(--med); border-color: rgba(98,185,247,0.4); }
-  .chip.sev-low { background: rgba(255,255,255,0.06); color: var(--muted); border-color: var(--border); }
+  .chip.sev-critical { background: rgba(211,77,77,0.18); color: var(--crit);
+    border-color: rgba(211,77,77,0.4); }
+  .chip.sev-high { background: rgba(240,183,94,0.18); color: var(--high);
+    border-color: rgba(240,183,94,0.4); }
+  .chip.sev-medium { background: rgba(98,185,247,0.16); color: var(--med);
+    border-color: rgba(98,185,247,0.4); }
+  .chip.sev-low { background: rgba(255,255,255,0.06); color: var(--muted);
+    border-color: var(--border); }
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   .kvtable { width: 100%; border-collapse: collapse; font-size: 12px; }
   .kvtable td { padding: 3px 6px; border-bottom: 1px solid var(--border); }
@@ -661,8 +654,10 @@ _CSS = """
   .cell .cnt { font-weight: 600; }
   .tier-low { background: rgba(98,185,247,0.10); border-color: rgba(98,185,247,0.30); }
   .tier-med { background: rgba(98,185,247,0.22); border-color: rgba(98,185,247,0.55); }
-  .tier-high { background: rgba(240,183,94,0.25); border-color: rgba(240,183,94,0.55); color: var(--high); }
-  .tier-crit { background: rgba(211,77,77,0.30); border-color: rgba(211,77,77,0.7); color: var(--crit); }
+  .tier-high { background: rgba(240,183,94,0.25); border-color: rgba(240,183,94,0.55);
+    color: var(--high); }
+  .tier-crit { background: rgba(211,77,77,0.30); border-color: rgba(211,77,77,0.7);
+    color: var(--crit); }
   /* timeline */
   .timeline-svg { display: block; margin-top: 10px; max-width: 100%; }
   .lane-bg0 { fill: rgba(255,255,255,0.02); }

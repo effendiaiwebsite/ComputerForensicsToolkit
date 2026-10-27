@@ -15,8 +15,8 @@ import logging
 import re
 import uuid
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -63,17 +63,28 @@ class Finding:
 
 
 def load_rules_from_dir(root: str | Path) -> list[Rule]:
-    """Load every ``.yml`` rule under ``root`` (recursively)."""
+    """Load every ``.yml`` rule under ``root`` (recursively); unparseable files are logged."""
+    rules, _failed = load_rules_from_dir_with_errors(root)
+    return rules
+
+
+def load_rules_from_dir_with_errors(root: str | Path) -> tuple[list[Rule], dict[str, str]]:
+    """Like :func:`load_rules_from_dir` but also returns ``{file: error}`` for
+    rule files that could not be loaded. Raises ``FileNotFoundError`` when
+    ``root`` is not a directory, so a misconfigured rules path is not mistaken
+    for an empty rule set."""
     root_path = Path(root)
-    if not root_path.exists():
-        return []
+    if not root_path.is_dir():
+        raise FileNotFoundError(f"rules directory not found: {root_path}")
     rules: list[Rule] = []
+    failed: dict[str, str] = {}
     seen_ids: dict[str, str] = {}
     for yml in sorted(root_path.rglob("*.yml")):
         try:
             rule = load_rule_file(yml)
         except Exception as exc:
             logger.error("could not load rule %s: %s", yml, exc)
+            failed[str(yml)] = f"{type(exc).__name__}: {exc}"
             continue
         if rule.id in seen_ids:
             raise ValueError(
@@ -81,7 +92,7 @@ def load_rules_from_dir(root: str | Path) -> list[Rule]:
             )
         seen_ids[rule.id] = str(yml)
         rules.append(rule)
-    return rules
+    return rules, failed
 
 
 def load_rule_file(path: str | Path) -> Rule:
@@ -101,17 +112,20 @@ def _rule_from_dict(d: dict[str, Any]) -> Rule:
 
     severity = d["severity"]
     if severity not in _VALID_SEVERITIES:
-        raise ValueError(f"invalid severity {severity!r}; must be one of {sorted(_VALID_SEVERITIES)}")
+        raise ValueError(
+            f"invalid severity {severity!r}; must be one of {sorted(_VALID_SEVERITIES)}"
+        )
 
     mitre = d["mitre"] or {}
-    techniques = tuple(mitre.get("techniques") or ())
-    tactics = tuple(mitre.get("tactics") or ())
+    techniques = _string_tuple(mitre.get("techniques"), f"rule {d['id']!r}: mitre.techniques")
+    tactics = _string_tuple(mitre.get("tactics"), f"rule {d['id']!r}: mitre.tactics")
     if not techniques:
         raise ValueError(f"rule {d['id']!r} must declare at least one MITRE technique")
 
     match = d["match"]
     if not isinstance(match, dict):
         raise ValueError(f"rule {d['id']!r}: 'match' must be a mapping")
+    _validate_spec(match, f"rule {d['id']!r}: match")
 
     return Rule(
         id=str(d["id"]),
@@ -125,6 +139,46 @@ def _rule_from_dict(d: dict[str, Any]) -> Rule:
         author=d.get("author"),
         date=str(d["date"]) if d.get("date") else None,
     )
+
+
+def _string_tuple(value: Any, label: str) -> tuple[str, ...]:
+    """Normalize a YAML scalar-or-list into a tuple of strings.
+
+    A bare ``techniques: T1547.001`` must become ``("T1547.001",)``, not the
+    characters of the string.
+    """
+    if value is None:
+        return ()
+    items = [value] if isinstance(value, str) else value
+    if not isinstance(items, (list, tuple)):
+        raise ValueError(f"{label} must be a string or a list of strings")
+    for item in items:
+        if not isinstance(item, str) or not item:
+            raise ValueError(f"{label} entries must be non-empty strings, got {item!r}")
+    return tuple(items)
+
+
+_NUMERIC_OPS = frozenset({"gt", "lt", "gte", "lte"})
+
+
+def _validate_spec(spec: Mapping[str, Any], label: str) -> None:
+    """Reject predicate arguments that could never compare sensibly at runtime."""
+    for field_key, predicate in spec.items():
+        if field_key == "any_of":
+            if not isinstance(predicate, list):
+                raise ValueError(f"{label}.any_of must be a list of mappings")
+            for i, branch in enumerate(predicate):
+                if not isinstance(branch, Mapping):
+                    raise ValueError(f"{label}.any_of[{i}] must be a mapping")
+                _validate_spec(branch, f"{label}.any_of[{i}]")
+            continue
+        if not isinstance(predicate, Mapping):
+            continue
+        for op, op_arg in predicate.items():
+            if op in _NUMERIC_OPS and _safe_num(op_arg) is None:
+                raise ValueError(
+                    f"{label}.{field_key}.{op} needs a numeric argument, got {op_arg!r}"
+                )
 
 
 # --- predicate evaluation -------------------------------------------------
@@ -160,10 +214,7 @@ def _get_field(obj: Any, path: str) -> Any:
 
 def _match_predicate(value: Any, predicate: Any) -> bool:
     if isinstance(predicate, dict):
-        for op, op_arg in predicate.items():
-            if not _apply_op(value, op, op_arg):
-                return False
-        return True
+        return all(_apply_op(value, op, op_arg) for op, op_arg in predicate.items())
     return value == predicate
 
 
@@ -176,14 +227,17 @@ def _apply_op(value: Any, op: str, op_arg: Any) -> bool:
         return isinstance(value, str) and fnmatch.fnmatchcase(value, op_arg)
     if op == "iglob":
         return isinstance(value, str) and fnmatch.fnmatchcase(value.lower(), op_arg.lower())
-    if op == "gt":
-        return _safe_num(value) is not None and value > op_arg
-    if op == "lt":
-        return _safe_num(value) is not None and value < op_arg
-    if op == "gte":
-        return _safe_num(value) is not None and value >= op_arg
-    if op == "lte":
-        return _safe_num(value) is not None and value <= op_arg
+    if op in _NUMERIC_OPS:
+        num, bound = _safe_num(value), _safe_num(op_arg)
+        if num is None or bound is None:
+            return False
+        if op == "gt":
+            return num > bound
+        if op == "lt":
+            return num < bound
+        if op == "gte":
+            return num >= bound
+        return num <= bound
     if op == "exists":
         return (value is not None) == bool(op_arg)
     if op == "not":
@@ -216,7 +270,7 @@ def evaluate_rules(
     """Evaluate every rule against every event; emit one Finding per match."""
     rule_list = list(rules)
     findings: list[Finding] = []
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     for event in events:
         event_id = event.get("event_id")
         if not event_id:

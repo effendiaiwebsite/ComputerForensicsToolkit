@@ -28,6 +28,7 @@ than aborting the triage run.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 
 from core.events import Event, make_event
@@ -158,13 +159,8 @@ def _emit_visits(
             continue
         host = _safe_host(url)
 
-        ts = None
         accessed = rec.get("AccessedTime")
-        if accessed:
-            try:
-                ts = wintimestamp(accessed)
-            except (ValueError, OverflowError, OSError):
-                ts = None
+        ts = _filetime_field(accessed, wintimestamp)
 
         summary = "Visit: " + _clip(url, 100) + (f" ({host})" if host else "")
         out.append(make_event(
@@ -224,13 +220,8 @@ def _emit_downloads(
             except (ValueError, IndexError):
                 pass
 
-        ts_end = None
         accessed = rec.get("AccessedTime")
-        if accessed:
-            try:
-                ts_end = wintimestamp(accessed)
-            except (ValueError, OverflowError, OSError):
-                ts_end = None
+        ts_end = _filetime_field(accessed, wintimestamp)
 
         source_host = _safe_host(source_url)
         filename = Path(target.replace("\\", "/")).name if target else ""
@@ -259,6 +250,20 @@ def _emit_downloads(
             raw={"accessed_time": accessed},
         ))
     return out
+
+
+def _filetime_field(value, wintimestamp) -> datetime | None:
+    """dissect hands back an ``int`` FILETIME for most ESE columns but an
+    already-decoded ``datetime`` for ``DateTime``-typed ones (version
+    dependent). A malformed value must only lose this row's timestamp."""
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return wintimestamp(value)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
 
 
 def _iso_or_none(dt) -> str | None:

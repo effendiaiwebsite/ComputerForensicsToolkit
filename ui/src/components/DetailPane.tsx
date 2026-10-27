@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, ExternalLink, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, X } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,6 @@ export function DetailPane({
   onClose: () => void;
 }) {
   if (!event) return null;
-  const Body = pickRenderer(event);
   return (
     <aside className="flex w-[480px] flex-col border-l border-border bg-muted/20">
       <div className="flex items-center justify-between border-b border-border px-3 py-2">
@@ -40,7 +39,7 @@ export function DetailPane({
           <Field k="event_id" v={event.event_id} />
         </div>
 
-        <Body event={event} />
+        {renderBody(event)}
 
         <div className="mt-4 break-all text-muted-foreground">
           source_path: <span className="text-foreground">{event.source_path}</span>
@@ -150,6 +149,37 @@ function CollapsibleRaw({ data, title = "raw" }: { data: unknown; title?: string
   );
 }
 
+// URLs come from suspect evidence: never a live link (clicking would fetch the
+// suspect's URL from the examiner's workstation, and javascript:/file: schemes
+// are unfiltered), so render as text with copy-to-clipboard instead.
+function UrlText({ url }: { url: string }) {
+  const [copied, setCopied] = useState(false);
+  if (!url) return <span className="text-muted-foreground">—</span>;
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      // clipboard unavailable — the text is still selectable
+    }
+  }
+  return (
+    <span className="inline-flex items-start gap-1">
+      <span className="break-all text-foreground select-all">{url}</span>
+      <button
+        type="button"
+        onClick={() => void copy()}
+        title="Copy URL"
+        aria-label="Copy URL"
+        className="mt-0.5 shrink-0 text-muted-foreground hover:text-foreground"
+      >
+        {copied ? <Check className="h-3 w-3 text-success" /> : <Copy className="h-3 w-3" />}
+      </button>
+    </span>
+  );
+}
+
 // Anything that isn't a primitive renders to a JSON string for KVList rows.
 function val(x: unknown): React.ReactNode {
   if (x === null || x === undefined || x === "") return <span className="text-muted-foreground">—</span>;
@@ -173,42 +203,43 @@ function bytes(n: unknown): string {
 // ---------- dispatcher -------------------------------------------------------
 
 type RendererProps = { event: ForensicEvent };
-type Renderer = (props: RendererProps) => React.ReactElement;
 
-function pickRenderer(event: ForensicEvent): Renderer {
+function renderBody(event: ForensicEvent): React.ReactElement {
   switch (event.event_type) {
     case "browser_visit":
-      return BrowserVisitView;
+      return <BrowserVisitView event={event} />;
     case "browser_download":
-      return BrowserDownloadView;
+      return <BrowserDownloadView event={event} />;
     case "browser_search":
-      return BrowserSearchView;
+      return <BrowserSearchView event={event} />;
     case "browser_bookmark":
-      return BrowserBookmarkView;
+      return <BrowserBookmarkView event={event} />;
     case "program_execution":
-      return ProgramExecutionView;
+      return <ProgramExecutionView event={event} />;
     case "persistence_entry":
-      return PersistenceView;
+      return <PersistenceView event={event} />;
     case "system_config_change":
-      return RegistryKVView;
+      return <RegistryKVView event={event} />;
     case "usb_connection":
-      return UsbConnectionView;
+      return <UsbConnectionView event={event} />;
     case "service_install":
-      return ServiceInstallView;
+      return <ServiceInstallView event={event} />;
     case "account_change":
-      return event.source_artifact === "registry.sam" ? AccountView : EvtxRecordView;
+      return event.source_artifact === "registry.sam"
+        ? <AccountView event={event} />
+        : <EvtxRecordView event={event} />;
     case "shell_command":
     case "scheduled_task":
     case "security_event":
-      return EvtxRecordView;
+      return <EvtxRecordView event={event} />;
     case "file_access":
-      return FileAccessView;
+      return <FileAccessView event={event} />;
     case "file_delete":
-      return RecycleBinView;
+      return <RecycleBinView event={event} />;
     case "program_install":
-      return ProgramInstallView;
+      return <ProgramInstallView event={event} />;
     default:
-      return GenericView;
+      return <GenericView event={event} />;
   }
 }
 
@@ -237,16 +268,8 @@ function BrowserVisitView({ event }: RendererProps) {
     <>
       <SectionHeader>visit</SectionHeader>
       {title && <div className="mb-2 text-foreground">{title}</div>}
-      <div className="mb-2 break-all">
-        <a
-          href={url}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-center gap-1 text-accent underline-offset-2 hover:underline"
-        >
-          {url}
-          <ExternalLink className="h-3 w-3" />
-        </a>
+      <div className="mb-2">
+        <UrlText url={url} />
       </div>
       <div className="mb-2 flex flex-wrap gap-1">
         {host && <Pill tone="accent">{host}</Pill>}
@@ -312,17 +335,7 @@ function BrowserDownloadView({ event }: RendererProps) {
       )}
       <div className="mt-3">
         <SectionHeader>source url</SectionHeader>
-        <div className="break-all">
-          <a
-            href={sourceUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-start gap-1 text-accent underline-offset-2 hover:underline"
-          >
-            {sourceUrl}
-            <ExternalLink className="mt-0.5 h-3 w-3 shrink-0" />
-          </a>
-        </div>
+        <UrlText url={sourceUrl} />
       </div>
       <CollapsibleRaw data={event.raw} />
     </>
@@ -359,16 +372,8 @@ function BrowserBookmarkView({ event }: RendererProps) {
     <>
       <SectionHeader>bookmark</SectionHeader>
       {title && <div className="mb-2 text-foreground">{title}</div>}
-      <div className="mb-2 break-all">
-        <a
-          href={url}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-center gap-1 text-accent underline-offset-2 hover:underline"
-        >
-          {url}
-          <ExternalLink className="h-3 w-3" />
-        </a>
+      <div className="mb-2">
+        <UrlText url={url} />
       </div>
       <div className="mb-2 flex flex-wrap gap-1">{host && <Pill tone="accent">{host}</Pill>}</div>
       <KVList rows={[["last modified", val(e.last_modified)]]} />

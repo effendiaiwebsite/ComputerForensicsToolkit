@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import struct
 from pathlib import Path
 
 import pytest
@@ -132,6 +133,71 @@ def test_parse_jumplist_returns_empty_when_not_ole(tmp_path: Path, monkeypatch):
 def test_filetime_to_iso_handles_zero_and_overflow():
     assert jl_module._filetime_to_iso(0) is None
     assert jl_module._filetime_to_iso(-1) is None
-    # FILETIME for 2025-01-01T00:00:00Z: epoch-1735689600 + 11644473600 ticks × 10M.
+    # FILETIME for 2025-01-01T00:00:00Z: epoch-1735689600 + 11644473600 ticks x 10M.
     iso = jl_module._filetime_to_iso(133_801_632_000_000_000)
     assert iso == "2025-01-01T00:00:00Z"
+
+
+# ----- DestList layouts ----------------------------------------------------------
+
+_FT_2025 = 133_801_632_000_000_000  # 2025-01-01T00:00:00Z
+
+
+def _dest_list_entry(*, version: int, entry_id: int, filetime: int, pin: int, path: str) -> bytes:
+    """Build one DestList entry with the real fixed-field offsets for the
+    header ``version`` (1 = Win7/8, 3/4 = Win10+)."""
+    encoded = path.encode("utf-16-le")
+    buf = bytearray(112)
+    struct.pack_into("<I", buf, 88, entry_id)
+    struct.pack_into("<Q", buf, 100, filetime)
+    struct.pack_into("<i", buf, 108, pin)
+    if version == 1:
+        buf += struct.pack("<H", len(path)) + encoded
+    else:
+        buf += struct.pack("<iIQ", -1, 7, 0) + struct.pack("<H", len(path)) + encoded + b"\x00" * 4
+    return bytes(buf)
+
+
+def _dest_list_stream(version: int, entries: list[tuple[int, int, int, str]]) -> bytes:
+    header = struct.pack("<i", version) + b"\x00" * 28
+    body = b"".join(
+        _dest_list_entry(version=version, entry_id=eid, filetime=ft, pin=pin, path=p)
+        for eid, ft, pin, p in entries
+    )
+    return header + body
+
+
+@pytest.mark.parametrize("version", [1, 3, 4])
+def test_dest_list_parsed_per_header_version(version: int):
+    stream = _dest_list_stream(version, [
+        (1, _FT_2025, -1, r"C:\Users\alice\first.docx"),
+        (2, _FT_2025 + 10_000_000, 0, r"C:\Users\alice\second-longer-name.docx"),
+    ])
+    ole = _FakeOle({"DestList": stream}, has_destlist=True)
+
+    parsed = jl_module._try_parse_dest_list(ole)
+
+    assert parsed == {
+        1: {"last_access": "2025-01-01T00:00:00Z", "pin_status": -1},
+        2: {"last_access": "2025-01-01T00:00:01Z", "pin_status": 0},
+    }
+
+
+def test_dest_list_unknown_version_returns_empty():
+    stream = struct.pack("<i", 2) + b"\x00" * 200
+    ole = _FakeOle({"DestList": stream}, has_destlist=True)
+    assert jl_module._try_parse_dest_list(ole) == {}
+
+
+def test_parse_jumplist_closes_the_ole_container(tmp_path: Path, monkeypatch):
+    jl_path = tmp_path / "deadbeefdeadbeef.automaticDestinations-ms"
+    jl_path.write_bytes(b"\x00")
+    closed: list[bool] = []
+
+    class _ClosingOle(_FakeOle):
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(jl_module.olefile, "OleFileIO", lambda path: _ClosingOle({"junk": b"x"}))
+    jl_module.parse_jumplist(jl_path, collection_id="c", host_id_hint="H")
+    assert closed == [True]

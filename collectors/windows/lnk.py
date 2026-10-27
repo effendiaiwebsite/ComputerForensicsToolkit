@@ -19,7 +19,7 @@ class CollectedLnk:
 def collect_lnk(
     path: str | Path,
     *,
-    host_id: str | None = None,  # noqa: ARG001 — kept for symmetry with siblings
+    host_id: str | None = None,
 ) -> CollectedLnk:
     src = Path(path).resolve()
     if not src.exists():

@@ -17,7 +17,7 @@ import os
 import threading
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -129,6 +129,8 @@ def generate_hash_report(
     The output is what a grader / examiner sees as 'the hash list of the
     exported data' — assignment-grade artifact.
     """
+    if not Path(audit_path).is_file():
+        raise FileNotFoundError(f"audit log not found: {audit_path}")
     audit = AuditLog(audit_path)
     records = [
         r for r in audit.read_all()
@@ -151,7 +153,7 @@ def generate_hash_report(
 
     # Default: text table.
     with out_p.open("w", encoding="utf-8") as fh:
-        fh.write(f"Digital Forensics Triage Toolkit — hash report\n")
+        fh.write("Digital Forensics Triage Toolkit — hash report\n")
         fh.write(f"Source audit log: {audit_path}\n")
         fh.write(f"Records: {len(records)}\n\n")
         fh.write(f"{'SHA-256':<66} {'SIZE':>14}  PATH\n")
@@ -176,4 +178,4 @@ def _q(v: Any) -> str:
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")

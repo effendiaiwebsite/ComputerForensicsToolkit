@@ -72,8 +72,9 @@ def test_evtx_files_are_not_classified_as_hives(tmp_path: Path) -> None:
 
 
 def test_discover_browser_histories_matches_chrome_and_edge(tmp_path: Path) -> None:
-    chrome = tmp_path / "Users" / "alice" / "AppData" / "Local" / "Google" / "Chrome" / "User Data" / "Default"
-    edge = tmp_path / "Users" / "alice" / "AppData" / "Local" / "Microsoft" / "Edge" / "User Data" / "Default"
+    local = tmp_path / "Users" / "alice" / "AppData" / "Local"
+    chrome = local / "Google" / "Chrome" / "User Data" / "Default"
+    edge = local / "Microsoft" / "Edge" / "User Data" / "Default"
     chrome.mkdir(parents=True)
     edge.mkdir(parents=True)
     (chrome / "History").write_bytes(b"\x00")
@@ -85,3 +86,30 @@ def test_discover_browser_histories_matches_chrome_and_edge(tmp_path: Path) -> N
     kinds = {h.browser_kind for h in found}
     assert kinds == {"chrome", "edge"}
     assert all(h.user_hint == "alice" for h in found)
+
+
+def test_transaction_logs_are_not_classified_as_hives(tmp_path: Path) -> None:
+    """SYSTEM.LOG1 / SAM.LOG2 / Amcache.hve.LOG1 / *.blf / *.regtrans-ms sit
+    beside the hives in config/ and must not be handed to regipy."""
+    for name in (
+        "SYSTEM", "SYSTEM.LOG1", "SYSTEM.LOG2", "SOFTWARE.LOG1", "SAM.LOG2",
+        "Amcache.hve", "Amcache.hve.LOG1",
+        "SYSTEM{0b2e}.TM.blf", "SYSTEM{0b2e}.TMContainer00000000000000000001.regtrans-ms",
+    ):
+        (tmp_path / name).write_bytes(b"\x00")
+
+    found = discover_hives(tmp_path)
+    assert sorted(h.path.name for h in found) == ["Amcache.hve", "SYSTEM"]
+
+
+def test_discover_recycle_bin_files_requires_dollar_i_plus_six_chars(tmp_path: Path) -> None:
+    from collectors.windows.user_hives import discover_recycle_bin_files
+
+    bin_dir = tmp_path / "$Recycle.Bin" / "S-1-5-21-1-2-3-1001"
+    bin_dir.mkdir(parents=True)
+    names = ("$IABC123.txt", "$Ixyz789", "$I30", "$Iwhatever.log", "$RABC123.txt", "desktop.ini")
+    for name in names:
+        (bin_dir / name).write_bytes(b"\x00")
+
+    names = sorted(f.path.name for f in discover_recycle_bin_files(tmp_path))
+    assert names == ["$IABC123.txt", "$Ixyz789"]

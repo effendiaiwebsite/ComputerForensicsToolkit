@@ -26,13 +26,21 @@ HiveKind = Literal["system", "software", "sam", "ntuser", "usrclass", "amcache"]
 logger = logging.getLogger(__name__)
 
 
+def _open_hive(hive_path: str | Path) -> RegistryHive | None:
+    """regipy reads the whole file into memory on open, so a non-hive (or a
+    truncated one) fails fast here; that is expected for stray files in a
+    triage directory and logged without a traceback."""
+    try:
+        return RegistryHive(str(hive_path))
+    except Exception as exc:
+        logger.warning("could not open %s as a registry hive: %s", hive_path, exc)
+        return None
+
+
 def detect_hive_kind(hive_path: str | Path) -> str | None:
     """Return the regipy ``hive_type`` for the file, or ``None`` if not detectable."""
-    try:
-        return RegistryHive(str(hive_path)).hive_type
-    except Exception:
-        logger.exception("could not detect hive type for %s", hive_path)
-        return None
+    hive = _open_hive(hive_path)
+    return hive.hive_type if hive is not None else None
 
 
 def parse_hive(
@@ -45,37 +53,43 @@ def parse_hive(
 ) -> tuple[str, list[Event]]:
     """Parse any supported hive. Returns ``(kind, events)``.
 
+    The hive is opened once; the same ``RegistryHive`` is handed to the
+    per-kind parser so a SOFTWARE hive is not read into memory twice.
+
     Raises ``ValueError`` for unknown hive types so the IPC layer can return
     a clear error to the UI instead of silently swallowing the bytes.
     """
-    detected = kind or detect_hive_kind(hive_path)
+    hive = _open_hive(hive_path)
+    detected = kind or (hive.hive_type if hive is not None else None)
     if detected is None:
         raise ValueError(f"could not detect hive type for {hive_path}")
     detected = detected.lower()
 
     if detected == "system":
         return detected, parse_system_hive(
-            hive_path, collection_id=collection_id, host_id_hint=host_id_hint,
+            hive_path, collection_id=collection_id, host_id_hint=host_id_hint, hive=hive,
         )
     if detected == "software":
         return detected, parse_software_hive(
-            hive_path, collection_id=collection_id, host_id_hint=host_id_hint,
+            hive_path, collection_id=collection_id, host_id_hint=host_id_hint, hive=hive,
         )
     if detected == "sam":
         return detected, parse_sam_hive(
-            hive_path, collection_id=collection_id, host_id_hint=host_id_hint,
+            hive_path, collection_id=collection_id, host_id_hint=host_id_hint, hive=hive,
         )
     if detected == "ntuser":
         return detected, parse_ntuser_hive(
-            hive_path, collection_id=collection_id, host_id_hint=host_id_hint, user_hint=user_hint,
+            hive_path, collection_id=collection_id, host_id_hint=host_id_hint,
+            user_hint=user_hint, hive=hive,
         )
     if detected == "usrclass":
         return detected, parse_usrclass_hive(
-            hive_path, collection_id=collection_id, host_id_hint=host_id_hint, user_hint=user_hint,
+            hive_path, collection_id=collection_id, host_id_hint=host_id_hint,
+            user_hint=user_hint, hive=hive,
         )
     if detected == "amcache":
         return detected, parse_amcache_hive(
-            hive_path, collection_id=collection_id, host_id_hint=host_id_hint,
+            hive_path, collection_id=collection_id, host_id_hint=host_id_hint, hive=hive,
         )
 
     raise ValueError(f"unsupported hive type: {detected!r}")

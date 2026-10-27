@@ -19,7 +19,7 @@ class CollectedPrefetch:
 def collect_prefetch(
     path: str | Path,
     *,
-    host_id: str | None = None,  # noqa: ARG001 — kept for symmetry with sibling collectors
+    host_id: str | None = None,
 ) -> CollectedPrefetch:
     src = Path(path).resolve()
     if not src.exists():

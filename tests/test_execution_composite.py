@@ -42,9 +42,18 @@ def _exec(
 def test_composite_groups_by_lowercased_path_across_sources() -> None:
     store = EventStore()
     store.insert_events([
-        _exec(source="prefetch", path=r"C:\WINDOWS\SYSTEM32\powershell.exe", ts="2026-01-01T00:00:00Z", run_count=10),
-        _exec(source="registry.amcache", path=r"C:\Windows\System32\PowerShell.exe", ts="2026-02-01T00:00:00Z"),
-        _exec(source="registry.system", path=r"c:\windows\system32\POWERSHELL.EXE", ts="2026-03-01T00:00:00Z"),
+        _exec(
+            source="prefetch", path=r"C:\WINDOWS\SYSTEM32\powershell.exe",
+            ts="2026-01-01T00:00:00Z", run_count=10,
+        ),
+        _exec(
+            source="registry.amcache", path=r"C:\Windows\System32\PowerShell.exe",
+            ts="2026-02-01T00:00:00Z",
+        ),
+        _exec(
+            source="registry.system", path=r"c:\windows\system32\POWERSHELL.EXE",
+            ts="2026-03-01T00:00:00Z",
+        ),
     ])
     rows = store.program_execution_composite()
     assert len(rows) == 1

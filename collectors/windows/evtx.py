@@ -25,7 +25,8 @@ class CollectedEvtx:
 def _channel_from_filename(name: str) -> str:
     """Recover the channel name from a wevtutil-exported filename.
 
-    ``Microsoft-Windows-PowerShell%4Operational.evtx`` → ``Microsoft-Windows-PowerShell/Operational``.
+    ``Microsoft-Windows-PowerShell%4Operational.evtx`` →
+    ``Microsoft-Windows-PowerShell/Operational``.
     Plain ``Security.evtx`` → ``Security``.
     """
     stem = name
@@ -37,7 +38,7 @@ def _channel_from_filename(name: str) -> str:
 def collect_evtx(
     path: str | Path,
     *,
-    host_id: str | None = None,  # noqa: ARG001 — kept for symmetry with collect_hive
+    host_id: str | None = None,
 ) -> CollectedEvtx:
     src = Path(path).resolve()
     if not src.exists():

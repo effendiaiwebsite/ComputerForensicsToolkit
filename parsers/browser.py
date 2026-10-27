@@ -8,8 +8,9 @@ Emits three event types:
 * ``browser_search``    — one per row in ``keyword_search_terms``
   (joined with ``urls``)
 
-The History DB is opened **read-only, immutable** via a SQLite URI so we never
-mutate the artifact the examiner handed us. Missing tables/columns are tolerated
+The History DB is opened read-only through :mod:`parsers._sqlite` (a temp-dir
+snapshot when a ``-wal``/``-journal`` sidecar is present, ``immutable=1`` in
+place otherwise) so we never mutate the artifact. Missing tables/columns are tolerated
 silently — Chromium has churned its schema across versions, and a missing table
 just means "no events of this kind to emit."
 
@@ -22,20 +23,21 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from contextlib import ExitStack
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
 from urllib.parse import urlsplit
 
 from collectors.windows.browser import BrowserKind, detect_browser_kind
 from core.events import Event, make_event
+from parsers._sqlite import open_sqlite_readonly
 
 PARSER_VERSION = "browser_history/0.1.0"
 HOST_OS = "windows"
 
 logger = logging.getLogger(__name__)
 
-_WEBKIT_EPOCH = datetime(1601, 1, 1, tzinfo=timezone.utc)
+_WEBKIT_EPOCH = datetime(1601, 1, 1, tzinfo=UTC)
 
 # Chromium PageTransition core types (low 8 bits).
 _TRANSITION_CORE = {
@@ -76,23 +78,19 @@ def parse_browser_history(
     kind = browser_kind or detect_browser_kind(path_str)
     source_artifact = f"{kind}.history"
 
-    try:
-        conn = sqlite3.connect(
-            f"file:{Path(path_str).as_posix()}?mode=ro&immutable=1",
-            uri=True,
-        )
-    except sqlite3.Error:
-        logger.exception("could not open browser history %s", path_str)
-        return []
-    conn.row_factory = sqlite3.Row
-    try:
+    with ExitStack() as stack:
+        try:
+            conn = stack.enter_context(open_sqlite_readonly(path_str))
+        except (sqlite3.Error, OSError):
+            logger.exception("could not open browser history %s", path_str)
+            return []
+        conn.row_factory = sqlite3.Row
+        args = (path_str, source_artifact, collection_id, host_id_hint, user_hint)
         events: list[Event] = []
-        events.extend(_emit_visits(conn, path_str, source_artifact, collection_id, host_id_hint, user_hint))
-        events.extend(_emit_downloads(conn, path_str, source_artifact, collection_id, host_id_hint, user_hint))
-        events.extend(_emit_searches(conn, path_str, source_artifact, collection_id, host_id_hint, user_hint))
+        events.extend(_emit_visits(conn, *args))
+        events.extend(_emit_downloads(conn, *args))
+        events.extend(_emit_searches(conn, *args))
         return events
-    finally:
-        conn.close()
 
 
 # ----- visits ------------------------------------------------------------------
